@@ -77,17 +77,21 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	}
 	github := &gh.GitHub{Client: client, Org: cfg.Org, Token: token}
 	relay := &Relay{Client: client, MaxPushBytes: cfg.MaxPushBytes, metrics: metrics, health: health}
-	// The single worker owns these caches. Restarting simply rechecks the API.
-	repositories := map[string]gh.Repository{}
-	defaultBranches := map[string]string{}
+	// The single worker owns this cache. Restarting simply rechecks the API.
+	type cachedRepository struct {
+		gh.Repository
+		defaultBranch string
+	}
+	repositories := map[string]*cachedRepository{}
 	syncRepo := func(ctx context.Context, sourcePath string, entry lore.ManifestEntry) error {
+		started := time.Now()
 		repository, exists := repositories[sourcePath]
 		if !exists {
-			var err error
-			repository, err = github.EnsureRepository(ctx, sourcePath, entry.Description)
+			repo, err := github.EnsureRepository(ctx, sourcePath, entry.Description)
 			if err != nil {
 				return err
 			}
+			repository = &cachedRepository{Repository: repo}
 			repositories[sourcePath] = repository
 		}
 		health.Progress("sync")
@@ -103,16 +107,15 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		result, err := relay.Sync(ctx, sourceURL, repository.GitURL, credential)
 		if err != nil {
 			delete(repositories, sourcePath)
-			delete(defaultBranches, sourcePath)
 			return err
 		}
-		if result.DefaultBranch != "" && defaultBranches[sourcePath] != result.DefaultBranch {
+		if result.DefaultBranch != "" && repository.defaultBranch != result.DefaultBranch {
 			if err := github.SetDefaultBranch(ctx, repository.Name, result.DefaultBranch); err != nil {
 				return err
 			}
-			defaultBranches[sourcePath] = result.DefaultBranch
+			repository.defaultBranch = result.DefaultBranch
 		}
-		log.Info("refs_verified", "source", sourcePath, "repository", repository.Name,
+		log.Info("synced", "source", sourcePath, "repository", repository.Name, "duration", time.Since(started).String(),
 			"changed", result.Changed, "refs", len(result.SourceRefs), "bytes", result.Bytes)
 		return nil
 	}

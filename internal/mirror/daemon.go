@@ -107,7 +107,6 @@ func (d *daemon) run(ctx context.Context) error {
 		if path != "" {
 			item := queue[path]
 			item.attempted = now
-			started := time.Now()
 			err := d.syncWork(ctx, path, item.entry)
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -116,7 +115,6 @@ func (d *daemon) run(ctx context.Context) error {
 				item.done = true
 				item.failures = 0
 				item.next = time.Time{}
-				d.log.Info("synced", "source", path, "duration", time.Since(started).String())
 			} else {
 				item.failures++
 				delay := retryDelay(err, item.failures)
@@ -160,8 +158,6 @@ func (d *daemon) runOnce(ctx context.Context) error {
 			if pause := serverRetryAfter(err); pause > 0 {
 				return fmt.Errorf("rate limited: stop one-shot run and retry after %s: %w", pause, err)
 			}
-		} else {
-			d.log.Info("synced", "source", path)
 		}
 	}
 	if failed != 0 {
@@ -236,10 +232,6 @@ func nextWork(queue map[string]*work, now, wake time.Time) (string, time.Time) {
 
 func retryDelay(err error, failures int) time.Duration {
 	if errors.Is(err, ErrPushTooLarge) {
-		return 24 * time.Hour
-	}
-	var permanent interface{ Permanent() bool }
-	if errors.As(err, &permanent) && permanent.Permanent() {
 		return 24 * time.Hour
 	}
 	delay := time.Minute
