@@ -297,8 +297,7 @@ func TestRelaySidebandProgressKeepsSyncHealthy(t *testing.T) {
 			_, syncErr = r.Sync(ctx, "https://example.com/source.git", "https://example.com/destination.git", "test-token", "master", s.setDefault)
 		}()
 		synctest.Wait()
-		time.Sleep(6 * time.Minute)
-		synctest.Wait()
+		synctest.Sleep(6 * time.Minute)
 		if health.Stuck() {
 			t.Error("sync marked stuck while receiving source progress")
 		}

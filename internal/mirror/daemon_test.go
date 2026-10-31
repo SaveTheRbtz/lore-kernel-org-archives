@@ -85,8 +85,7 @@ func TestNextRunSurvivesDiscovery(t *testing.T) {
 				}
 				startDaemon(t, &d)
 				first := <-attempts
-				time.Sleep(tc.maximum)
-				synctest.Wait()
+				synctest.Sleep(tc.maximum)
 				select {
 				case second := <-attempts:
 					if delay := second.Sub(first); delay < tc.minimum || delay > tc.maximum {
@@ -178,8 +177,7 @@ func TestPendingUpdatesWhileSyncIsBlocked(t *testing.T) {
 		if got := pending.Load(); got != 0 {
 			t.Fatalf("active and not-yet-due repositories counted as pending: %d", got)
 		}
-		time.Sleep(time.Nanosecond)
-		synctest.Wait()
+		synctest.Sleep(time.Nanosecond)
 		if got := pending.Load(); got != 1 {
 			t.Fatalf("repository becoming due during sync: pending=%d, want 1", got)
 		}
@@ -222,11 +220,9 @@ func TestDiscoveryContinuesDuringSyncWithoutStarvingBackfill(t *testing.T) {
 		<-started
 		drainWork(attempted)
 		updates <- manifestResult{manifest: lore.Manifest{"/hot": {Modified: 2}, "/cold": {}}}
-		time.Sleep(time.Nanosecond)
-		synctest.Wait()
+		synctest.Sleep(time.Nanosecond)
 		updates <- manifestResult{err: errors.New("discovery unavailable")}
-		time.Sleep(time.Nanosecond)
-		synctest.Wait()
+		synctest.Sleep(time.Nanosecond)
 		if got := drainWork(attempted); len(got) != 0 {
 			t.Fatalf("work overlapped blocked sync: %v", got)
 		}
@@ -265,8 +261,7 @@ func TestRemovedArchivesAreNotRetried(t *testing.T) {
 			t.Fatalf("initial work=%q, want /removed", got)
 		}
 		updates <- manifestResult{manifest: lore.Manifest{}}
-		time.Sleep(2 * time.Minute)
-		synctest.Wait()
+		synctest.Sleep(2 * time.Minute)
 		if got := drainWork(attempted); len(got) != 0 {
 			t.Fatalf("removed archive retried: %v", got)
 		}
@@ -320,15 +315,13 @@ func TestHealthReportsBlockedWorkAndRecoversAfterCancellation(t *testing.T) {
 			}
 		}
 		cancel := startDaemon(t, &d)
-		time.Sleep(5 * time.Minute)
-		synctest.Wait()
+		synctest.Sleep(5 * time.Minute)
 		check(true)
 		updates <- manifestResult{manifest: lore.Manifest{"/a": {}}}
 		<-started
 		synctest.Wait()
 		check(false)
-		time.Sleep(5 * time.Minute)
-		synctest.Wait()
+		synctest.Sleep(5 * time.Minute)
 		check(true)
 		cancel()
 		synctest.Wait()
