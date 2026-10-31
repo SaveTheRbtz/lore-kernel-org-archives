@@ -36,7 +36,6 @@ resource "google_project_service" "api" {
     "secretmanager.googleapis.com",
     "telemetry.googleapis.com",
   ])
-  project            = local.project
   service            = each.key
   disable_on_destroy = false
 }
