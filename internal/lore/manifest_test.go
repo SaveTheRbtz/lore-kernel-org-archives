@@ -47,14 +47,21 @@ func fetchResponse(t *testing.T, status int, body []byte) (Manifest, error) {
 }
 
 func TestFetchManifest(t *testing.T) {
-	input := fmt.Sprintf(`{"/lkml/git/20.git":{"fingerprint":%q,"modified":123,"description":"Linux kernel","owner":null,"forkgroup":"ignored"},"/legacy":{"fingerprint":%q,"modified":0}}`, manifestTestFingerprint, manifestTestFingerprint)
+	input := fmt.Sprintf(`{
+		"/git/git/0.git":{"fingerprint":%[1]q,"modified":1,"description":"Git development [epoch 0]  ","owner":null,"forkgroup":"ignored"},
+		"/git/git/20.git":{"fingerprint":%[1]q,"modified":123,"description":"Git development [epoch 19]"},
+		"/linux-alpha/git/0.git":{"fingerprint":%[1]q,"modified":42,"description":"Alpha arch development list [epoch 0]"},
+		"/legacy":{"fingerprint":%[1]q,"modified":0,"description":"Legacy [epoch 0]"}
+	}`, manifestTestFingerprint)
 	manifest, err := fetchResponse(t, http.StatusOK, gzipManifest(t, input))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := Manifest{
-		"/lkml/git/20.git": {Fingerprint: manifestTestFingerprint, Modified: 123, Description: "Linux kernel"},
-		"/legacy":          {Fingerprint: manifestTestFingerprint},
+		"/git/git/0.git":         {Fingerprint: manifestTestFingerprint, Modified: 1, Description: "Git development (0 out of 2)"},
+		"/git/git/20.git":        {Fingerprint: manifestTestFingerprint, Modified: 123, Description: "Git development [epoch 19] (20 out of 2)"},
+		"/linux-alpha/git/0.git": {Fingerprint: manifestTestFingerprint, Modified: 42, Description: "Alpha arch development list (0 out of 1)"},
+		"/legacy":                {Fingerprint: manifestTestFingerprint, Description: "Legacy [epoch 0]"},
 	}
 	if !maps.Equal(manifest, want) {
 		t.Fatalf("manifest = %#v, want %#v", manifest, want)

@@ -33,14 +33,15 @@ func TestNewRejectsInvalidOrganizationBeforeCredentials(t *testing.T) {
 
 func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 	type creation struct {
-		Name     string `json:"name"`
-		Homepage string `json:"homepage"`
-		Private  *bool  `json:"private"`
-		AutoInit *bool  `json:"auto_init"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Homepage    string `json:"homepage"`
+		Private     *bool  `json:"private"`
+		AutoInit    *bool  `json:"auto_init"`
 	}
 	created := make(chan creation, 1)
 	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/repos/testorg/lkml.20" {
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/testorg/git.1" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -59,24 +60,66 @@ func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 			t.Error("mirror created more than once")
 		}
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(testRepository("lkml.20", "/lkml/git/20.git"))
+		remote := testRepository("git.1", "/git/git/1.git")
+		remote.Description = sdk.Ptr(body.Description)
+		_ = json.NewEncoder(w).Encode(remote)
 	})
-	got, err := g.EnsureRepository(t.Context(), "/lkml/git/20.git", "LKML [epoch 20]", 0)
+	got, err := g.EnsureRepository(t.Context(), "/git/git/1.git", "Git development (1 out of 2)", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Repository{ID: 123, Name: "lkml.20", GitURL: "https://github.com/testorg/lkml.20.git", DefaultBranch: "master"}
+	want := Repository{ID: 123, Name: "git.1", GitURL: "https://github.com/testorg/git.1.git", DefaultBranch: "master"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Fatalf("repository (-want +got):\n%s", diff)
 	}
 	select {
 	case got := <-created:
-		want := creation{Name: "lkml.20", Homepage: "https://lore.kernel.org/lkml/git/20.git", Private: sdk.Ptr(false), AutoInit: sdk.Ptr(false)}
+		want := creation{Name: "git.1", Description: "Mirror of https://lore.kernel.org/git/git/1.git: Git development (1 out of 2)", Homepage: "https://lore.kernel.org/git/", Private: sdk.Ptr(false), AutoInit: sdk.Ptr(false)}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Fatalf("creation (-want +got):\n%s", diff)
 		}
 	default:
 		t.Fatal("mirror was not created")
+	}
+}
+
+func TestEnsureRepositoryReconcilesMetadata(t *testing.T) {
+	const description = "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (0 out of 21)"
+	for _, tc := range []struct {
+		name, homepage, description string
+		patches                     int32
+	}{
+		{"old format", "https://lore.kernel.org/lkml/git/0.git", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML [epoch 0]", 1},
+		{"new epoch", "https://lore.kernel.org/lkml/", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (0 out of 20)", 1},
+		{"current", "https://lore.kernel.org/lkml/", description, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var patches atomic.Int32
+			g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+				remote := testRepository("lkml.0", "/lkml/git/0.git")
+				remote.Homepage, remote.Description = sdk.Ptr(tc.homepage), sdk.Ptr(tc.description)
+				if r.Method == http.MethodPatch {
+					patches.Add(1)
+					var update sdk.Repository
+					if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+						t.Error(err)
+					}
+					if update.GetHomepage() != "https://lore.kernel.org/lkml/" || update.GetDescription() != description {
+						t.Errorf("metadata update = %s, %s", update.GetHomepage(), update.GetDescription())
+					}
+					remote.Homepage, remote.Description = update.Homepage, update.Description
+				} else if r.Method != http.MethodGet {
+					t.Errorf("unexpected method %s", r.Method)
+				}
+				_ = json.NewEncoder(w).Encode(remote)
+			})
+			if _, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "LKML (0 out of 21)", 123); err != nil {
+				t.Fatal(err)
+			}
+			if patches.Load() != tc.patches {
+				t.Fatalf("metadata patched %d times, want %d", patches.Load(), tc.patches)
+			}
+		})
 	}
 }
 
@@ -205,13 +248,19 @@ func TestSetDefaultBranch(t *testing.T) {
 }
 
 func TestRepositoryOperationsPropagateRateLimits(t *testing.T) {
-	for _, operation := range []string{"get", "create", "edit"} {
+	for _, operation := range []string{"get", "create", "metadata", "edit"} {
 		t.Run(operation, func(t *testing.T) {
 			var requests atomic.Int32
 			g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
 				if r.Method == http.MethodGet && operation == "create" {
 					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if r.Method == http.MethodGet && operation == "metadata" {
+					remote := testRepository("lkml.0", "/lkml/git/0.git")
+					remote.Description = sdk.Ptr("outdated")
+					_ = json.NewEncoder(w).Encode(remote)
 					return
 				}
 				w.Header().Set("Retry-After", "42")
@@ -231,8 +280,8 @@ func TestRepositoryOperationsPropagateRateLimits(t *testing.T) {
 				t.Fatalf("%s did not expose a 42-second scheduler cooldown: %v", operation, err)
 			}
 			wantRequests := int32(1)
-			if operation == "create" {
-				wantRequests = 2 // Initial GET and throttled POST, with no readback.
+			if operation == "create" || operation == "metadata" {
+				wantRequests = 2 // Initial GET and throttled mutation, with no readback.
 			}
 			if requests.Load() != wantRequests {
 				t.Fatalf("%s made %d requests, want %d", operation, requests.Load(), wantRequests)
@@ -323,9 +372,11 @@ func newTestGitHub(t *testing.T, handler http.HandlerFunc) *Client {
 }
 
 func testRepository(name, path string) *sdk.Repository {
+	list, _, _ := strings.Cut(path[1:], "/")
 	return &sdk.Repository{
 		ID: sdk.Ptr[int64](123), Name: sdk.Ptr(name), FullName: sdk.Ptr("testorg/" + name),
-		Homepage: sdk.Ptr("https://lore.kernel.org" + path), CloneURL: sdk.Ptr("https://untrusted.example/repo.git"),
+		Homepage: sdk.Ptr("https://lore.kernel.org/" + list + "/"), Description: sdk.Ptr("Mirror of https://lore.kernel.org" + path),
+		CloneURL:      sdk.Ptr("https://untrusted.example/repo.git"),
 		DefaultBranch: sdk.Ptr("master"),
 	}
 }

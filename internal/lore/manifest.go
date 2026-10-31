@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -87,6 +88,7 @@ func decodeManifest(b []byte) (Manifest, error) {
 	}
 	manifest := make(Manifest, len(raw))
 	names := make(map[string]string, len(raw))
+	epochs := make(map[string]int)
 	for path, entry := range raw {
 		name, err := RepositoryName(path)
 		if err != nil {
@@ -106,6 +108,24 @@ func decodeManifest(b []byte) (Manifest, error) {
 			return nil, fmt.Errorf("manifest entry %q has no valid modified timestamp", path)
 		}
 		manifest[path] = ManifestEntry{*entry.Fingerprint, *entry.Modified, entry.Description}
+		if list, _, numeric := strings.Cut(path[1:], "/git/"); numeric {
+			epochs[list]++
+		}
+	}
+	for path, entry := range manifest {
+		list, epoch, numeric := strings.Cut(path[1:], "/git/")
+		if !numeric {
+			continue
+		}
+		epoch = strings.TrimSuffix(epoch, ".git")
+		description := strings.TrimRightFunc(entry.Description, unicode.IsSpace)
+		description = strings.TrimSuffix(description, "[epoch "+epoch+"]")
+		description = strings.TrimRightFunc(description, unicode.IsSpace)
+		entry.Description = fmt.Sprintf("(%s out of %d)", epoch, epochs[list])
+		if description != "" {
+			entry.Description = description + " " + entry.Description
+		}
+		manifest[path] = entry
 	}
 	return manifest, nil
 }

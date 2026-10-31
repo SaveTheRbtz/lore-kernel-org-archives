@@ -66,23 +66,15 @@ func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return response, retryPolicy(err)
 }
 
-// EnsureRepository only adopts repositories with the exact source homepage.
+// EnsureRepository checks provenance before reconciling mirror metadata.
 func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description string, expectedID int64) (Repository, error) {
 	name, err := lore.RepositoryName(sourcePath)
 	if err != nil {
 		return Repository{}, err
 	}
 	sourceURL := lore.Origin + sourcePath
-	remote, response, err := g.api.Repositories.Get(ctx, g.org, name)
-	if err == nil {
-		return g.validateRepository(remote, name, sourceURL, expectedID)
-	}
-	if response == nil || response.StatusCode != http.StatusNotFound {
-		return Repository{}, retryPolicy(err)
-	}
-	if expectedID != 0 {
-		return Repository{}, fmt.Errorf("refusing to recreate %s/%s: approved repository %d is missing", g.org, name, expectedID)
-	}
+	list, _, _ := strings.Cut(sourcePath[1:], "/")
+	listURL := lore.Origin + "/" + list + "/"
 	desc := "Mirror of " + sourceURL
 	if description != "" {
 		desc += ": " + description
@@ -90,33 +82,56 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description s
 	if runes := []rune(desc); len(runes) > 350 {
 		desc = string(runes[:350])
 	}
-	remote, _, err = g.api.Repositories.Create(ctx, g.org, &sdk.Repository{
-		Name: sdk.Ptr(name), Description: sdk.Ptr(desc), Homepage: sdk.Ptr(sourceURL),
-		Private: sdk.Ptr(false), AutoInit: sdk.Ptr(false),
-		HasIssues: sdk.Ptr(false), HasWiki: sdk.Ptr(false), HasProjects: sdk.Ptr(false),
-	})
+	remote, response, err := g.api.Repositories.Get(ctx, g.org, name)
 	if err != nil {
-		createErr := retryPolicy(err)
-		var limited *rateLimitError
-		if errors.As(createErr, &limited) {
-			return Repository{}, createErr
+		if response == nil || response.StatusCode != http.StatusNotFound {
+			return Repository{}, retryPolicy(err)
 		}
-		// Creation can succeed even when its response is lost. Read back once
-		// and apply the same provenance check before accepting the repository.
-		remote, _, err = g.api.Repositories.Get(ctx, g.org, name)
+		if expectedID != 0 {
+			return Repository{}, fmt.Errorf("refusing to recreate %s/%s: approved repository %d is missing", g.org, name, expectedID)
+		}
+		remote, _, err = g.api.Repositories.Create(ctx, g.org, &sdk.Repository{
+			Name: sdk.Ptr(name), Description: sdk.Ptr(desc), Homepage: sdk.Ptr(listURL),
+			Private: sdk.Ptr(false), AutoInit: sdk.Ptr(false),
+			HasIssues: sdk.Ptr(false), HasWiki: sdk.Ptr(false), HasProjects: sdk.Ptr(false),
+		})
 		if err != nil {
-			return Repository{}, errors.Join(createErr, retryPolicy(err))
+			createErr := retryPolicy(err)
+			var limited *rateLimitError
+			if errors.As(createErr, &limited) {
+				return Repository{}, createErr
+			}
+			// Creation can succeed even when its response is lost. Read back once
+			// and apply the same provenance check before accepting the repository.
+			remote, _, err = g.api.Repositories.Get(ctx, g.org, name)
+			if err != nil {
+				return Repository{}, errors.Join(createErr, retryPolicy(err))
+			}
 		}
 	}
-	return g.validateRepository(remote, name, sourceURL, expectedID)
+	repo, err := g.validateRepository(remote, name, sourceURL, listURL, expectedID)
+	if err != nil {
+		return Repository{}, err
+	}
+	if remote.GetDescription() != desc || remote.GetHomepage() != listURL {
+		remote, _, err = g.api.Repositories.Edit(ctx, g.org, name, &sdk.Repository{
+			Description: sdk.Ptr(desc), Homepage: sdk.Ptr(listURL),
+		})
+		if err != nil {
+			return Repository{}, retryPolicy(err)
+		}
+		return g.validateRepository(remote, name, sourceURL, listURL, repo.ID)
+	}
+	return repo, nil
 }
 
-func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL string, expectedID int64) (Repository, error) {
+func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL, listURL string, expectedID int64) (Repository, error) {
 	if expectedID != 0 && remote.GetID() != expectedID {
 		return Repository{}, fmt.Errorf("refusing %s/%s: repository ID changed from %d to %d", g.org, name, expectedID, remote.GetID())
 	}
 	if remote.GetID() <= 0 || !strings.EqualFold(remote.GetName(), name) ||
-		!strings.EqualFold(remote.GetFullName(), g.org+"/"+name) || remote.GetHomepage() != sourceURL {
+		!strings.EqualFold(remote.GetFullName(), g.org+"/"+name) ||
+		(remote.GetHomepage() != sourceURL && remote.GetHomepage() != listURL) {
 		return Repository{}, fmt.Errorf("refusing to adopt %s/%s: source provenance does not match %s", g.org, name, sourceURL)
 	}
 	if remote.GetPrivate() || remote.GetArchived() || remote.GetFork() {
