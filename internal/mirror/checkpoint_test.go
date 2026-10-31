@@ -26,9 +26,9 @@ func TestCheckpointsWalkBackWithoutRequestingPacks(t *testing.T) {
 			response string
 			at       time.Duration
 		}{
-			{tip, "0035shallow " + middle.String() + "\n0000", 2 * time.Second},
-			{middle, "0035shallow " + oldest.String() + "\n0000", 4 * time.Second},
-			{oldest, "0000", 6 * time.Second},
+			{tip, "0035shallow " + middle.String() + "\n0000", 5 * time.Second},
+			{middle, "0035shallow " + oldest.String() + "\n0000", 10 * time.Second},
+			{oldest, "0000", 15 * time.Second},
 		}
 		started, calls := time.Now(), 0
 		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

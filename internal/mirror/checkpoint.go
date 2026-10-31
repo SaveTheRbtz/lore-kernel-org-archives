@@ -20,7 +20,7 @@ import (
 
 const (
 	checkpointCommits = 10000
-	checkpointDelay   = 2 * time.Second
+	checkpointDelay   = 5 * time.Second
 )
 
 func checkpointWait(ctx context.Context) error {

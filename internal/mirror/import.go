@@ -87,8 +87,9 @@ func (s *relaySession) importCheckpoints(ctx context.Context, refs map[string]pl
 		if index == len(plan)-1 {
 			target = refs
 		}
+		before := s.bytes
 		if err := s.sync(ctx, target); err != nil {
-			return fmt.Errorf("checkpoint %d of %d: %w", index+1, len(plan), err)
+			return fmt.Errorf("checkpoint %d of %d (%s), request_bytes=%d: %w", index+1, len(plan), plan[index], s.bytes-before, err)
 		}
 		s.batches++
 		if s.log != nil {

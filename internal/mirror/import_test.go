@@ -57,7 +57,12 @@ func TestCheckpointImportPublishesCompleteHistoryAndFinalMetadata(t *testing.T) 
 	synctest.Test(t, func(t *testing.T) {
 		s, first, middle, _ := checkpointTestServer(t)
 		var attempted []map[string]plumbing.Hash
+		var previousPush time.Time
 		s.rejectPush = func(req *packp.ReferenceUpdateRequest) bool {
+			if !previousPush.IsZero() && time.Since(previousPush) < 10*time.Second {
+				t.Error("checkpoint pushes exceeded six per minute")
+			}
+			previousPush = time.Now()
 			targets := map[string]plumbing.Hash{}
 			for _, command := range req.Commands {
 				targets[command.Name.String()] = command.New
