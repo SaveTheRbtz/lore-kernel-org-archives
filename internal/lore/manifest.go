@@ -29,8 +29,8 @@ type Manifest map[string]ManifestEntry
 
 // FetchManifest retrieves one complete inventory. A bad entry invalidates the
 // entire response, so a partial inventory never replaces the last good one.
-func FetchManifest(ctx context.Context, client *http.Client, sourceURL string) (Manifest, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(sourceURL, "/")+"/manifest.js.gz", nil)
+func FetchManifest(ctx context.Context, client *http.Client) (Manifest, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, Origin+"/manifest.js.gz", nil)
 	if err != nil {
 		return nil, err
 	}

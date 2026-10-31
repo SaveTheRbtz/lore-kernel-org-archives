@@ -119,14 +119,7 @@ func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL stri
 }
 
 func (g *Client) SetDefaultBranch(ctx context.Context, repoName, branch string) error {
-	remote, _, err := g.api.Repositories.Get(ctx, g.org, repoName)
-	if err != nil {
-		return retryPolicy(err)
-	}
-	if remote.GetDefaultBranch() == branch {
-		return nil
-	}
-	_, _, err = g.api.Repositories.Edit(ctx, g.org, repoName, &sdk.Repository{DefaultBranch: sdk.Ptr(branch)})
+	_, _, err := g.api.Repositories.Edit(ctx, g.org, repoName, &sdk.Repository{DefaultBranch: sdk.Ptr(branch)})
 	return retryPolicy(err)
 }
 

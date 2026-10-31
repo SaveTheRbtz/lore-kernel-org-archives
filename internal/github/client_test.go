@@ -127,32 +127,29 @@ func TestEnsureRepositoryRecoversLostCreationResponse(t *testing.T) {
 	}
 }
 
-func TestSetDefaultBranchSkipsUnchangedBranch(t *testing.T) {
-	branch := "main"
-	patches := 0
-	var mu sync.Mutex
+func TestSetDefaultBranch(t *testing.T) {
+	var patches atomic.Int32
 	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		if r.Method == http.MethodPatch {
-			patches++
-			var update sdk.Repository
-			if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
-				t.Error(err)
-			}
-			branch = update.GetDefaultBranch()
+		if r.Method != http.MethodPatch || r.URL.Path != "/repos/testorg/lkml.0" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
-		_ = json.NewEncoder(w).Encode(sdk.Repository{DefaultBranch: sdk.Ptr(branch)})
+		patches.Add(1)
+		var update sdk.Repository
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			t.Error(err)
+		}
+		if update.GetDefaultBranch() != "master" {
+			t.Errorf("default branch = %q, want master", update.GetDefaultBranch())
+		}
+		_ = json.NewEncoder(w).Encode(update)
 	})
-	for range 2 {
-		if err := g.SetDefaultBranch(context.Background(), "lkml.0", "master"); err != nil {
-			t.Fatal(err)
-		}
+	if err := g.SetDefaultBranch(t.Context(), "lkml.0", "master"); err != nil {
+		t.Fatal(err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if branch != "master" || patches != 1 {
-		t.Fatalf("branch=%s patches=%d", branch, patches)
+	if patches.Load() != 1 {
+		t.Fatalf("branch updated %d times, want once", patches.Load())
 	}
 }
 
@@ -162,10 +159,6 @@ func TestRepositoryOperationsPropagateRateLimits(t *testing.T) {
 			g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodGet && operation == "create" {
 					w.WriteHeader(http.StatusNotFound)
-					return
-				}
-				if r.Method == http.MethodGet && operation == "edit" {
-					_ = json.NewEncoder(w).Encode(sdk.Repository{DefaultBranch: sdk.Ptr("main")})
 					return
 				}
 				w.Header().Set("Retry-After", "42")
@@ -264,9 +257,8 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func newTestGitHub(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	client, err := sdk.NewClient(sdk.WithHTTPClient(server.Client()), sdk.WithURLs(sdk.Ptr(server.URL+"/"), nil))
+	server := httptest.NewTestServer(t, handler)
+	client, err := sdk.NewClient(sdk.WithHTTPClient(server.Client()))
 	if err != nil {
 		t.Fatal(err)
 	}

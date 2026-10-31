@@ -34,14 +34,13 @@ func gzipManifest(t *testing.T, data string) []byte {
 func fetchResponse(t *testing.T, status int, body []byte) (Manifest, error) {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /manifest.js.gz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET lore.kernel.org/manifest.js.gz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Encoding", "gzip")
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-	return FetchManifest(t.Context(), server.Client(), server.URL+"/")
+	server := httptest.NewTestServer(t, mux)
+	return FetchManifest(t.Context(), server.Client())
 }
 
 func TestFetchManifest(t *testing.T) {
@@ -121,17 +120,16 @@ func TestFetchManifestBoundsValidPayloads(t *testing.T) {
 
 func TestFetchManifestCancelsActiveRequest(t *testing.T) {
 	started := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(started)
 		<-r.Context().Done()
 	}))
-	defer server.Close()
 	client := server.Client()
 	client.Timeout = 5 * time.Second
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { _, err := FetchManifest(ctx, client, server.URL); done <- err }()
+	go func() { _, err := FetchManifest(ctx, client); done <- err }()
 	select {
 	case <-started:
 		cancel()
