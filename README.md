@@ -89,7 +89,7 @@ Pushes are limited to 1.75 GiB; oversized epochs remain incomplete and retry dai
 
 ## Development
 
-Requires Go 1.26 or newer. The application uses go-git and builds with CGO disabled.
+Requires Go 1.27 or newer. The application uses go-git and builds with CGO disabled.
 
 ```sh
 CGO_ENABLED=0 go test ./...
