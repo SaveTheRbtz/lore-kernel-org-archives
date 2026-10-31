@@ -8,8 +8,10 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -28,7 +30,7 @@ type ManifestEntry struct {
 
 type Manifest map[string]ManifestEntry
 
-// Summary adds the posting address and the zero-based epoch's inventory count.
+// Summary adds the posting address and the epoch's one-based position.
 func (e ManifestEntry) Summary(sourcePath, address string) string {
 	_, epoch, numeric := strings.Cut(sourcePath[1:], "/git/")
 	description := strings.TrimSpace(e.Description)
@@ -40,7 +42,8 @@ func (e ManifestEntry) Summary(sourcePath, address string) string {
 		description += " <" + address + ">"
 	}
 	if numeric {
-		description += fmt.Sprintf(" (%s out of %d)", epoch, e.Epochs)
+		number, _ := strconv.ParseUint(epoch, 10, 64) // Validated by RepositoryName.
+		description += fmt.Sprintf(" (%d out of %d)", number+1, e.Epochs)
 	}
 	return strings.TrimSpace(description)
 }
@@ -149,6 +152,8 @@ func RepositoryName(sourcePath string) (string, error) {
 	epoch := parts[2]
 	if epoch == "" {
 		epoch = "v1"
+	} else if number, err := strconv.ParseUint(epoch, 10, 64); err != nil || number == math.MaxUint64 {
+		return "", fmt.Errorf("unsupported epoch in source repository path %q", sourcePath)
 	}
 	name := strings.ToLower(parts[1]) + "." + epoch
 	if len(name) > 100 {

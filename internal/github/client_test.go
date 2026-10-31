@@ -64,7 +64,7 @@ func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 		remote.Description = sdk.Ptr(body.Description)
 		_ = json.NewEncoder(w).Encode(remote)
 	})
-	got, err := g.EnsureRepository(t.Context(), "/git/git/1.git", "Git development <git@vger.kernel.org> (1 out of 2)", 0)
+	got, err := g.EnsureRepository(t.Context(), "/git/git/1.git", "Git development <git@vger.kernel.org> (2 out of 2)", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 	}
 	select {
 	case got := <-created:
-		want := creation{Name: "git.1", Description: "Mirror of https://lore.kernel.org/git/git/1.git: Git development <git@vger.kernel.org> (1 out of 2)", Homepage: "https://lore.kernel.org/git/", Private: sdk.Ptr(false), AutoInit: sdk.Ptr(false)}
+		want := creation{Name: "git.1", Description: "Mirror of https://lore.kernel.org/git/git/1.git: Git development <git@vger.kernel.org> (2 out of 2)", Homepage: "https://lore.kernel.org/git/", Private: sdk.Ptr(false), AutoInit: sdk.Ptr(false)}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Fatalf("creation (-want +got):\n%s", diff)
 		}
@@ -84,13 +84,13 @@ func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 }
 
 func TestEnsureRepositoryReconcilesMetadata(t *testing.T) {
-	const description = "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (0 out of 21)"
+	const description = "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (1 out of 21)"
 	for _, tc := range []struct {
 		name, homepage, description string
 		patches                     int32
 	}{
 		{"old format", "https://lore.kernel.org/lkml/git/0.git", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML [epoch 0]", 1},
-		{"new epoch", "https://lore.kernel.org/lkml/", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (0 out of 20)", 1},
+		{"new epoch", "https://lore.kernel.org/lkml/", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (1 out of 20)", 1},
 		{"current", "https://lore.kernel.org/lkml/", description, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,7 +113,7 @@ func TestEnsureRepositoryReconcilesMetadata(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(remote)
 			})
-			if _, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "LKML (0 out of 21)", 123); err != nil {
+			if _, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "LKML (1 out of 21)", 123); err != nil {
 				t.Fatal(err)
 			}
 			if patches.Load() != tc.patches {

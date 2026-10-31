@@ -49,7 +49,7 @@ func fetchResponse(t *testing.T, status int, body []byte) (Manifest, error) {
 func TestFetchManifest(t *testing.T) {
 	input := fmt.Sprintf(`{
 		"/git/git/0.git":{"fingerprint":%[1]q,"modified":1,"description":"Git development [epoch 0]  ","owner":null,"forkgroup":"ignored"},
-		"/git/git/20.git":{"fingerprint":%[1]q,"modified":123,"description":"Git development [epoch 19]"},
+		"/git/git/1.git":{"fingerprint":%[1]q,"modified":123,"description":"Git development [epoch 19]"},
 		"/linux-alpha/git/0.git":{"fingerprint":%[1]q,"modified":42,"description":"Alpha arch development list [epoch 0]"},
 		"/legacy":{"fingerprint":%[1]q,"modified":0,"description":"Legacy [epoch 0]"}
 	}`, manifestTestFingerprint)
@@ -62,9 +62,9 @@ func TestFetchManifest(t *testing.T) {
 		manifest[path] = entry
 	}
 	want := Manifest{
-		"/git/git/0.git":         {Fingerprint: manifestTestFingerprint, Modified: 1, Description: "Git development <list@example.org> (0 out of 2)", Epochs: 2},
-		"/git/git/20.git":        {Fingerprint: manifestTestFingerprint, Modified: 123, Description: "Git development [epoch 19] <list@example.org> (20 out of 2)", Epochs: 2},
-		"/linux-alpha/git/0.git": {Fingerprint: manifestTestFingerprint, Modified: 42, Description: "Alpha arch development list <list@example.org> (0 out of 1)", Epochs: 1},
+		"/git/git/0.git":         {Fingerprint: manifestTestFingerprint, Modified: 1, Description: "Git development <list@example.org> (1 out of 2)", Epochs: 2},
+		"/git/git/1.git":         {Fingerprint: manifestTestFingerprint, Modified: 123, Description: "Git development [epoch 19] <list@example.org> (2 out of 2)", Epochs: 2},
+		"/linux-alpha/git/0.git": {Fingerprint: manifestTestFingerprint, Modified: 42, Description: "Alpha arch development list <list@example.org> (1 out of 1)", Epochs: 1},
 		"/legacy":                {Fingerprint: manifestTestFingerprint, Description: "Legacy [epoch 0] <list@example.org>"},
 	}
 	if !maps.Equal(manifest, want) {
@@ -175,7 +175,7 @@ func TestRepositoryName(t *testing.T) {
 			t.Errorf("RepositoryName(%q) = %q, %v; want %q", path, got, err, want)
 		}
 	}
-	invalid := []string{"", "lkml/git/0.git", "//evil/list", "/../list", "/list/../other", "/list%2fgit%2f0.git", "/list?x=1", "/list#fragment", "/list\\git\\0.git", "/list/git/-1.git", "/list/git/01.git", "/list/git/0", "/list/git/0.git/", "/list/other/0.git", "/.hidden", "/" + strings.Repeat("x", 100)}
+	invalid := []string{"", "lkml/git/0.git", "//evil/list", "/../list", "/list/../other", "/list%2fgit%2f0.git", "/list?x=1", "/list#fragment", "/list\\git\\0.git", "/list/git/-1.git", "/list/git/18446744073709551615.git", "/list/git/01.git", "/list/git/0", "/list/git/0.git/", "/list/other/0.git", "/.hidden", "/" + strings.Repeat("x", 100)}
 	for _, path := range invalid {
 		if got, err := RepositoryName(path); err == nil {
 			t.Errorf("RepositoryName(%q) accepted: %q", path, got)
