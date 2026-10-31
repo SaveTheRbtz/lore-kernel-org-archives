@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,10 +25,10 @@ const (
 // Discovery and sync run independently. Idle time and retry backoff are healthy;
 // only an active operation that stops making progress can become stuck.
 type Health struct {
-	// Ready, when set, reports whether startup validation has finished.
-	Ready func() bool
-	mu    sync.Mutex
-	last  [activityCount]time.Time
+	// SelectionPending stays true until the first manifest validates the requested inboxes.
+	SelectionPending atomic.Bool
+	mu               sync.Mutex
+	last             [activityCount]time.Time
 }
 
 func (h *Health) Begin(activity Activity) func() {
@@ -77,7 +78,7 @@ func (h *Health) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	if h != nil && h.Ready != nil && !h.Ready() {
+	if h != nil && h.SelectionPending.Load() {
 		http.Error(w, "starting", http.StatusServiceUnavailable)
 		return
 	}

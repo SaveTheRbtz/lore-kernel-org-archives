@@ -20,6 +20,10 @@ func TestHealthEndpointTracksProgressAndIndependentOperations(t *testing.T) {
 			}
 		}
 		check(http.StatusOK)
+		health.SelectionPending.Store(true)
+		check(http.StatusServiceUnavailable)
+		health.SelectionPending.Store(false)
+		check(http.StatusOK)
 		finishSync := health.Begin(Sync)
 		time.Sleep(4 * time.Minute)
 		health.SyncProgress()

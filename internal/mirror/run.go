@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"slices"
-	"sync/atomic"
 	"time"
 
 	gh "lore-mirror/internal/github"
@@ -38,12 +37,12 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	defer cancel()
 	client := newHTTPClient()
 	defer client.CloseIdleConnections()
-	var selectionReady atomic.Bool
-	selectionReady.Store(len(lists) == 0)
+	health := &observe.Health{}
+	health.SelectionPending.Store(len(lists) != 0)
 	fetch := func(ctx context.Context) (lore.Manifest, error) {
-		manifest, err := lore.FetchManifest(ctx, client, log, lists, !selectionReady.Load())
+		manifest, err := lore.FetchManifest(ctx, client, log, lists, health.SelectionPending.Load())
 		if err == nil {
-			selectionReady.Store(true)
+			health.SelectionPending.Store(false)
 		}
 		return manifest, err
 	}
@@ -54,7 +53,6 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		}
 		return writeInventory(os.Stdout, manifest)
 	}
-	health := &observe.Health{Ready: selectionReady.Load}
 	metrics, shutdownMetrics, err := observe.StartTelemetry(ctx, os.Getenv("GOOGLE_CLOUD_PROJECT"), health)
 	if err != nil {
 		return fmt.Errorf("initialize metrics: %w", err)
