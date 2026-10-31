@@ -10,11 +10,15 @@ digest=$(gcloud builds submit . --region="$region" \
 image="$region-docker.pkg.dev/$project/$name/$name@$digest"
 
 python3 - "$image" <<'PY'
-import json, pathlib, sys
+import json, pathlib, shutil, sys, tempfile
 path = pathlib.Path("infra/runtime.auto.tfvars.json")
 config = json.loads(path.read_text())
 config["image"] = sys.argv[1]
-path.write_text(json.dumps(config, indent=2) + "\n")
+with tempfile.TemporaryDirectory(dir=path.parent) as staging:
+    updated = pathlib.Path(staging) / path.name
+    updated.write_text(json.dumps(config, indent=2) + "\n")
+    shutil.copymode(path, updated)
+    updated.replace(path)
 PY
 deploy/apply.sh
 printf 'Deployed %s\n' "$image"
