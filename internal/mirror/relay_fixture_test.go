@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -156,7 +157,7 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 				break
 			}
 		}
-		s.haves = append([]plumbing.Hash(nil), req.Haves...)
+		s.haves = slices.Clone(req.Haves)
 		if !req.Depth.IsZero() || len(req.Shallows) > 0 || req.Capabilities.Supports(capability.ThinPack) {
 			s.t.Error("relay requested an incomplete or thin pack")
 		}
