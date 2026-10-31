@@ -210,13 +210,13 @@ func (d *daemon) reconcile(queue map[string]*work, manifest lore.Manifest) {
 		old, exists := queue[path]
 		if !exists {
 			queue[path] = &work{entry: entry, next: now.Add(rand.N(d.recheck))}
-		} else {
-			if !sameRevision(old.entry, entry) && old.failures == 0 && old.next.After(now) {
-				old.next = now
-			}
-			// Keep failure backoff and deadlines of work already due.
-			old.entry = entry
+			continue
 		}
+		if !sameRevision(old.entry, entry) && old.failures == 0 && old.next.After(now) {
+			old.next = now
+		}
+		// Keep failure backoff and deadlines of work already due.
+		old.entry = entry
 	}
 }
 
