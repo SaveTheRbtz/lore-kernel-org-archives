@@ -17,6 +17,7 @@ type daemon struct {
 	sync                   func(context.Context, string, lore.ManifestEntry) error
 	log                    *slog.Logger
 	metrics                *observe.Telemetry
+	queue                  func(int64)
 	health                 *observe.Health
 	poll, recheck, timeout time.Duration
 }
@@ -64,10 +65,21 @@ func (d *daemon) run(ctx context.Context) error {
 	updates := make(chan lore.Manifest, 1)
 	pollerDone := make(chan struct{})
 	go func() { defer close(pollerDone); d.pollManifests(ctx, updates) }()
-	defer func() { cancel(); <-pollerDone }()
+	finished := make(chan error, 1)
+	var active *work
+	var activePath string
+	var activeEntry lore.ManifestEntry
+	defer func() {
+		cancel()
+		if active != nil {
+			<-finished //nolint:errcheck // After cancellation, only wait for the worker to exit.
+		}
+		<-pollerDone
+	}()
 	queue := map[string]*work{}
-	defer d.metrics.Queue(0)
+	defer d.queue(0)
 	var cooldown time.Time
+	throttles := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -78,34 +90,18 @@ func (d *daemon) run(ctx context.Context) error {
 		default:
 		}
 		now := time.Now()
-		path, wake, pending := nextWork(queue, now)
-		if cooldown.After(now) {
-			path = ""
-			wake = cooldown
-		}
-		if path != "" {
-			pending-- // The active transfer is represented by worker activity.
-		}
-		d.metrics.Queue(pending)
-		if path != "" {
-			item := queue[path]
-			err := d.syncWork(ctx, path, item.entry)
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if err == nil {
-				item.failures = 0
-				item.next = time.Now().Add(jitter(d.recheck))
-			} else {
-				item.failures++
-				delay := retryDelay(err, item.failures)
-				item.next = time.Now().Add(delay)
-				if pause := serverRetryAfter(err); pause > 0 {
-					cooldown = time.Now().Add(pause)
-				}
-				d.log.Error("sync_failed", "source", path, "error", err, "retry_after", delay.String())
-			}
+		path, wake, pending := nextWork(queue, now, activePath)
+		if active == nil && path != "" && !cooldown.After(now) {
+			activePath, active = path, queue[path]
+			activeEntry = active.entry
+			go func(path string, entry lore.ManifestEntry) {
+				finished <- d.syncWork(ctx, path, entry)
+			}(path, activeEntry)
 			continue
+		}
+		d.queue(pending)
+		if cooldown.After(now) && (wake.IsZero() || cooldown.Before(wake)) {
+			wake = cooldown
 		}
 		var timer *time.Timer
 		var ready <-chan time.Time
@@ -117,6 +113,28 @@ func (d *daemon) run(ctx context.Context) error {
 		case <-ctx.Done():
 		case manifest := <-updates:
 			d.reconcile(queue, manifest)
+		case err := <-finished:
+			now := time.Now()
+			if err == nil {
+				throttles = 0
+				active.failures = 0
+				active.next = now.Add(jitter(d.recheck))
+				if active.entry.Fingerprint != activeEntry.Fingerprint || active.entry.Modified != activeEntry.Modified {
+					active.next = now
+				}
+			} else if ctx.Err() == nil {
+				active.failures++
+				delay := retryDelay(err, active.failures)
+				if serverRetryAfter(err) > 0 {
+					throttles++
+					pause := retryDelay(err, throttles)
+					cooldown = now.Add(pause)
+					delay = max(delay, pause)
+				}
+				active.next = now.Add(delay)
+				d.log.Error("sync_failed", "source", activePath, "error", err, "retry_after", delay.String())
+			}
+			active, activePath = nil, ""
 		case <-ready:
 		}
 		if timer != nil {
@@ -130,13 +148,13 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer d.metrics.Queue(0)
+	defer d.queue(0)
 	failed := 0
 	for index, path := range lore.OrderedPaths(manifest) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		d.metrics.Queue(int64(len(manifest) - index - 1))
+		d.queue(int64(len(manifest) - index - 1))
 		err := d.syncWork(ctx, path, manifest[path])
 		if err != nil {
 			failed++
@@ -196,8 +214,11 @@ func (d *daemon) reconcile(queue map[string]*work, manifest lore.Manifest) {
 	}
 }
 
-func nextWork(queue map[string]*work, now time.Time) (chosen string, wake time.Time, pending int64) {
+func nextWork(queue map[string]*work, now time.Time, active string) (chosen string, wake time.Time, pending int64) {
 	for path, item := range queue {
+		if path == active {
+			continue
+		}
 		if item.failures > 0 || !item.next.After(now) {
 			pending++
 		}
@@ -243,5 +264,5 @@ func serverRetryAfter(err error) time.Duration {
 }
 
 func jitter(delay time.Duration) time.Duration {
-	return delay + time.Duration(rand.Float64()*float64(delay)/10)
+	return delay + rand.N(delay)/10
 }

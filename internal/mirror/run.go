@@ -109,7 +109,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 			"changed", result.Changed, "refs", len(result.SourceRefs), "bytes", result.Bytes)
 		return nil
 	}
-	daemon := daemon{fetch: fetch, sync: syncRepo, log: log, metrics: metrics, health: health, poll: cfg.Poll, recheck: cfg.Recheck, timeout: cfg.Timeout}
+	daemon := daemon{fetch: fetch, sync: syncRepo, log: log, metrics: metrics, queue: metrics.Queue, health: health, poll: cfg.Poll, recheck: cfg.Recheck, timeout: cfg.Timeout}
 	shutdownHealth, healthFailures, err := observe.StartHealthServer(health)
 	if err != nil {
 		return fmt.Errorf("start health server: %w", err)

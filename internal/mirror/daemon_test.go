@@ -5,8 +5,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -21,6 +19,9 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 
 func startDaemon(t *testing.T, d *daemon) context.CancelFunc {
 	t.Helper()
+	if d.queue == nil {
+		d.queue = func(int64) {}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- d.run(ctx) }()
@@ -81,41 +82,95 @@ func TestNextRunSurvivesDiscovery(t *testing.T) {
 	}
 }
 
-func TestRateLimitPausesOtherRepositories(t *testing.T) {
+func TestRateLimitBackoffAcrossRepositories(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var polls atomic.Int64
-		attempted := make(chan string, 16)
+		type attempt struct {
+			path string
+			at   time.Time
+		}
+		attempted := make(chan attempt)
 		d := daemon{
 			fetch: func(context.Context) (lore.Manifest, error) {
-				if polls.Add(1) == 1 {
-					return lore.Manifest{"/a": {}}, nil
+				return lore.Manifest{"/a": {}, "/b": {}, "/c": {}, "/d": {}, "/e": {}, "/f": {}}, nil
+			},
+			sync: func(ctx context.Context, path string, _ lore.ManifestEntry) error {
+				select {
+				case attempted <- attempt{path, time.Now()}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				switch path {
+				case "/c":
+					return nil
+				case "/e":
+					return delayedError(3 * time.Hour)
+				case "/f":
+					<-ctx.Done()
+					return ctx.Err()
+				default:
+					return delayedError(time.Minute)
+				}
+			},
+			log: testLogger(), poll: time.Minute, recheck: time.Nanosecond, timeout: time.Hour,
+		}
+		startDaemon(t, &d)
+		var previous time.Time
+		for i, delay := range []time.Duration{0, time.Minute, 2 * time.Minute, 0, time.Minute, 3 * time.Hour} {
+			got := <-attempted
+			if want := "/" + string(rune('a'+i)); got.path != want {
+				t.Fatalf("attempted %q, want next untried repository %q", got.path, want)
+			}
+			if i > 0 {
+				elapsed := got.at.Sub(previous)
+				if elapsed < delay || elapsed > delay+delay/10 {
+					t.Fatalf("delay before %s = %s, want %s plus at most 10%% jitter", got.path, elapsed, delay)
+				}
+			}
+			previous = got.at
+		}
+	})
+}
+
+func TestPendingUpdatesWhileSyncIsBlocked(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var pending atomic.Int64
+		var updated atomic.Bool
+		var attempts atomic.Int64
+		started := make(chan struct{})
+		d := daemon{
+			fetch: func(context.Context) (lore.Manifest, error) {
+				if updated.Load() {
+					return lore.Manifest{"/b": {}, "/c": {}, "/d": {}}, nil
 				}
 				return lore.Manifest{"/a": {}, "/b": {}}, nil
 			},
 			sync: func(ctx context.Context, path string, _ lore.ManifestEntry) error {
-				select {
-				case attempted <- path:
-				case <-ctx.Done():
-					return ctx.Err()
-				}
+				attempts.Add(1)
 				if path == "/a" {
-					return delayedError{}
+					return nil
 				}
-				return nil
+				close(started)
+				<-ctx.Done()
+				return ctx.Err()
 			},
-			log: testLogger(), poll: time.Hour, recheck: 10 * time.Minute, timeout: time.Hour,
+			queue: pending.Store, log: testLogger(), poll: time.Minute, recheck: time.Nanosecond, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
-		<-attempted
-		time.Sleep(2 * time.Hour)
+		<-started
 		synctest.Wait()
-		if got := drainWork(attempted); len(got) != 0 {
-			t.Fatalf("rate limit allowed other work: %v", got)
+		if got := pending.Load(); got != 0 {
+			t.Fatalf("active and not-yet-due repositories counted as pending: %d", got)
 		}
-		time.Sleep(time.Hour + time.Second)
+		time.Sleep(time.Nanosecond)
 		synctest.Wait()
-		if got := drainWork(attempted); len(got) == 0 || got[0] != "/b" {
-			t.Fatalf("backfill did not resume first: %v", got)
+		if got := pending.Load(); got != 1 {
+			t.Fatalf("repository becoming due during sync: pending=%d, want 1", got)
+		}
+		updated.Store(true)
+		time.Sleep(66 * time.Second)
+		synctest.Wait()
+		if got := pending.Load(); got != 2 || attempts.Load() != 2 {
+			t.Fatalf("reconciled pending=%d, attempts=%d; want 2 pending behind one blocked sync", got, attempts.Load())
 		}
 	})
 }
@@ -222,7 +277,7 @@ func TestRunOnceContinuesPastFailure(t *testing.T) {
 			}
 			return nil
 		},
-		log: testLogger(), timeout: time.Minute,
+		log: testLogger(), queue: func(int64) {}, timeout: time.Minute,
 	}
 	if err := d.runOnce(context.Background()); err == nil {
 		t.Fatal("failed sync was not reported")
@@ -253,35 +308,33 @@ func TestHealthReportsBlockedWorkAndRecoversAfterCancellation(t *testing.T) {
 			},
 			log: testLogger(), health: health, poll: 24 * time.Hour, recheck: 10 * time.Minute, timeout: 24 * time.Hour,
 		}
-		check := func(want int) {
+		check := func(want bool) {
 			t.Helper()
-			response := httptest.NewRecorder()
-			health.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-			if response.Code != want {
-				t.Fatalf("health status=%d, want %d", response.Code, want)
+			if got := health.Stuck(); got != want {
+				t.Fatalf("health stuck=%v, want %v", got, want)
 			}
 		}
 		cancel := startDaemon(t, &d)
 		time.Sleep(5 * time.Minute)
 		synctest.Wait()
-		check(http.StatusServiceUnavailable)
+		check(true)
 		close(release)
 		<-started
 		synctest.Wait()
-		check(http.StatusOK)
+		check(false)
 		time.Sleep(5 * time.Minute)
 		synctest.Wait()
-		check(http.StatusServiceUnavailable)
+		check(true)
 		cancel()
 		synctest.Wait()
-		check(http.StatusOK)
+		check(false)
 	})
 }
 
-type delayedError struct{}
+type delayedError time.Duration
 
-func (delayedError) Error() string             { return "rate limit" }
-func (delayedError) RetryAfter() time.Duration { return 3 * time.Hour }
+func (delayedError) Error() string               { return "rate limit" }
+func (d delayedError) RetryAfter() time.Duration { return time.Duration(d) }
 
 func drainWork(events <-chan string) []string {
 	var paths []string
