@@ -388,6 +388,28 @@ func TestRetryPolicyClosesAuthResponseAndPreservesRateLimit(t *testing.T) {
 	}
 }
 
+func TestRepositoryAuthFailureIsDecodedOnce(t *testing.T) {
+	const message = "failed to sign in"
+	auth := &ghinstallation.HTTPError{
+		Message: "token endpoint rejected request",
+		Response: &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Body:       io.NopCloser(strings.NewReader(`{"message":"` + message + `"}`)),
+		},
+	}
+	api, err := sdk.NewClient(sdk.WithTransport(authTransport{roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, auth
+	})}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := Client{api: api, org: "testorg"}
+	_, err = g.EnsureRepository(t.Context(), "/git/git/0.git", nil, 0)
+	if !errors.Is(err, auth) || strings.Count(err.Error(), message) != 1 {
+		t.Fatalf("expected one decoded auth error with original cause, got %v", err)
+	}
+}
+
 type trackedBody struct {
 	io.Reader
 	ctx    context.Context

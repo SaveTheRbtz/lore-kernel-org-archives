@@ -58,7 +58,7 @@ func (g *Client) Token(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	token, err := g.installation.Token(ctx)
-	return token, retryPolicy(err)
+	return token, retryPolicy(decodeAuthError(err))
 }
 
 // Normalize auth failures before http.Client cancels their request context.
@@ -66,7 +66,18 @@ type authTransport struct{ http.RoundTripper }
 
 func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	response, err := t.RoundTripper.RoundTrip(req)
-	return response, retryPolicy(err)
+	return response, decodeAuthError(err)
+}
+
+func decodeAuthError(err error) error {
+	var auth *ghinstallation.HTTPError
+	if errors.As(err, &auth) && auth.Response != nil {
+		// ghinstallation leaves error bodies open; CheckResponse replaces Body.
+		body := auth.Response.Body
+		err = errors.Join(err, sdk.CheckResponse(auth.Response))
+		_ = body.Close()
+	}
+	return err
 }
 
 // EnsureRepository checks provenance before reconciling mirror metadata.
@@ -176,13 +187,6 @@ func retryPolicy(err error) error {
 	var limited *retryafter.Error
 	if errors.As(err, &limited) {
 		return err
-	}
-	var auth *ghinstallation.HTTPError
-	if errors.As(err, &auth) && auth.Response != nil {
-		// ghinstallation leaves error bodies open; CheckResponse replaces Body.
-		body := auth.Response.Body
-		err = errors.Join(err, sdk.CheckResponse(auth.Response))
-		_ = body.Close()
 	}
 	var primary *sdk.RateLimitError
 	var secondary *sdk.AbuseRateLimitError
