@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/mail"
-	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/format/config"
 
@@ -17,7 +16,7 @@ import (
 // FetchAddress reads the primary posting address from an inbox's public config.
 // An archive without a configured address has no posting address to display.
 func FetchAddress(ctx context.Context, client *http.Client, sourcePath string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, Origin+"/"+InboxName(sourcePath)+"/_/text/config/raw", nil)
 	if err != nil {

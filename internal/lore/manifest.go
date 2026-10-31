@@ -15,9 +15,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
+	fetchTimeout          = 45 * time.Second
 	Origin                = "https://lore.kernel.org"
 	maxManifestCompressed = 8 << 20
 	maxManifestExpanded   = 32 << 20
@@ -48,6 +50,8 @@ func (e ManifestEntry) Summary(sourcePath, address string) string {
 
 // FetchManifest skips unsharded archives and rejects malformed inventories.
 func FetchManifest(ctx context.Context, client *http.Client, log *slog.Logger, lists []string, requireAll bool) (Manifest, error) {
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, Origin+"/manifest.js.gz", nil)
 	if err != nil {
 		return nil, err

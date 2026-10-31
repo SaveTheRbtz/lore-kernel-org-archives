@@ -39,8 +39,6 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	var selectionReady atomic.Bool
 	selectionReady.Store(len(lists) == 0)
 	fetch := func(ctx context.Context) (lore.Manifest, error) {
-		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-		defer cancel()
 		manifest, err := lore.FetchManifest(ctx, client, log, lists, !selectionReady.Load())
 		if err == nil {
 			selectionReady.Store(true)
