@@ -70,8 +70,7 @@ func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func decodeAuthError(err error) error {
-	var auth *ghinstallation.HTTPError
-	if errors.As(err, &auth) && auth.Response != nil {
+	if auth, ok := errors.AsType[*ghinstallation.HTTPError](err); ok && auth.Response != nil {
 		// ghinstallation leaves error bodies open; CheckResponse replaces Body.
 		body := auth.Response.Body
 		err = errors.Join(err, sdk.CheckResponse(auth.Response))
@@ -111,8 +110,7 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath string, summar
 		})
 		if err != nil {
 			createErr := retryPolicy(err)
-			var limited *retryafter.Error
-			if errors.As(createErr, &limited) {
+			if _, ok := errors.AsType[*retryafter.Error](createErr); ok {
 				return Repository{}, createErr
 			}
 			// Creation can succeed even when its response is lost. Read back once
@@ -184,18 +182,14 @@ func validOrganization(name string) bool {
 }
 
 func retryPolicy(err error) error {
-	var limited *retryafter.Error
-	if errors.As(err, &limited) {
+	if _, ok := errors.AsType[*retryafter.Error](err); ok {
 		return err
 	}
-	var primary *sdk.RateLimitError
-	var secondary *sdk.AbuseRateLimitError
-	var apiErr *sdk.ErrorResponse
-	switch {
-	case errors.As(err, &primary):
+	if primary, ok := errors.AsType[*sdk.RateLimitError](err); ok {
 		delay := retryafter.Delay(primary.Response, time.Until(primary.Rate.Reset.Time))
 		return retryafter.Wrap(err, delay)
-	case errors.As(err, &secondary):
+	}
+	if secondary, ok := errors.AsType[*sdk.AbuseRateLimitError](err); ok {
 		var delay time.Duration
 		if secondary.RetryAfter != nil {
 			delay = *secondary.RetryAfter
@@ -205,7 +199,8 @@ func retryPolicy(err error) error {
 			delay = time.Minute
 		}
 		return retryafter.Wrap(err, delay)
-	case errors.As(err, &apiErr):
+	}
+	if apiErr, ok := errors.AsType[*sdk.ErrorResponse](err); ok {
 		if delay := retryafter.Delay(apiErr.Response, 0); delay > 0 {
 			return retryafter.Wrap(err, delay)
 		}
