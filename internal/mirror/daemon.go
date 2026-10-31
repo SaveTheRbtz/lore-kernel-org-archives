@@ -13,20 +13,18 @@ import (
 )
 
 type daemon struct {
-	fetch                 func(context.Context) (lore.Manifest, error)
-	sync                  func(context.Context, string, lore.ManifestEntry) error
-	log                   *slog.Logger
-	metrics               *observe.Telemetry
-	health                *observe.Health
-	poll, rescan, timeout time.Duration
+	fetch                  func(context.Context) (lore.Manifest, error)
+	sync                   func(context.Context, string, lore.ManifestEntry) error
+	log                    *slog.Logger
+	metrics                *observe.Telemetry
+	health                 *observe.Health
+	poll, recheck, timeout time.Duration
 }
 
 type work struct {
-	entry     lore.ManifestEntry
-	done      bool
-	failures  int
-	next      time.Time
-	attempted time.Time
+	entry    lore.ManifestEntry
+	failures int
+	next     time.Time
 }
 
 // Only successful manifests reach the worker. Failed discovery never empties
@@ -70,7 +68,6 @@ func (d *daemon) run(ctx context.Context) error {
 	defer func() { cancel(); <-pollerDone }()
 	queue := map[string]*work{}
 	defer d.metrics.Queue(0)
-	nextRescan := time.Now().Add(d.rescan)
 	var cooldown time.Time
 	for {
 		if err := ctx.Err(); err != nil {
@@ -78,27 +75,14 @@ func (d *daemon) run(ctx context.Context) error {
 		}
 		select {
 		case manifest := <-updates:
-			reconcile(queue, manifest)
+			d.reconcile(queue, manifest)
 		default:
 		}
 		now := time.Now()
-		if !now.Before(nextRescan) {
-			for _, item := range queue {
-				item.done = false
-			}
-			nextRescan = now.Add(d.rescan)
-			d.log.Info("rescan", "repositories", len(queue))
-		}
-		path, wake := nextWork(queue, now, nextRescan)
+		path, wake, pending := nextWork(queue, now)
 		if cooldown.After(now) {
 			path = ""
-			wake = minTime(cooldown, nextRescan)
-		}
-		pending := int64(0)
-		for _, item := range queue {
-			if !item.done {
-				pending++
-			}
+			wake = cooldown
 		}
 		if path != "" {
 			pending-- // The active transfer is represented by worker activity.
@@ -106,15 +90,13 @@ func (d *daemon) run(ctx context.Context) error {
 		d.metrics.Queue(pending)
 		if path != "" {
 			item := queue[path]
-			item.attempted = now
 			err := d.syncWork(ctx, path, item.entry)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			if err == nil {
-				item.done = true
 				item.failures = 0
-				item.next = time.Time{}
+				item.next = time.Now().Add(jitter(d.recheck))
 			} else {
 				item.failures++
 				delay := retryDelay(err, item.failures)
@@ -126,15 +108,20 @@ func (d *daemon) run(ctx context.Context) error {
 			}
 			continue
 		}
-		timer := time.NewTimer(time.Until(wake))
+		var timer *time.Timer
+		var ready <-chan time.Time
+		if !wake.IsZero() {
+			timer = time.NewTimer(time.Until(wake))
+			ready = timer.C
+		}
 		select {
 		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
 		case manifest := <-updates:
+			d.reconcile(queue, manifest)
+		case <-ready:
+		}
+		if timer != nil {
 			timer.Stop()
-			reconcile(queue, manifest)
-		case <-timer.C:
 		}
 	}
 }
@@ -188,7 +175,8 @@ func (d *daemon) syncWork(ctx context.Context, path string, entry lore.ManifestE
 	return err
 }
 
-func reconcile(queue map[string]*work, manifest lore.Manifest) {
+func (d *daemon) reconcile(queue map[string]*work, manifest lore.Manifest) {
+	now := time.Now()
 	for path := range queue {
 		if _, exists := manifest[path]; !exists {
 			delete(queue, path)
@@ -197,37 +185,36 @@ func reconcile(queue map[string]*work, manifest lore.Manifest) {
 	for path, entry := range manifest {
 		old, exists := queue[path]
 		if !exists {
-			queue[path] = &work{entry: entry}
+			queue[path] = &work{entry: entry, next: now.Add(rand.N(d.recheck))}
 		} else {
-			if old.entry.Fingerprint != entry.Fingerprint || old.entry.Modified != entry.Modified {
-				old.done = false
+			changed := old.entry.Fingerprint != entry.Fingerprint || old.entry.Modified != entry.Modified
+			if changed && old.failures == 0 && old.next.After(now) {
+				old.next = now
 			}
-			// New mail must not erase Retry-After or continually retry a large
-			// rejected epoch. Keep its deadline and position in the work queue.
+			// Keep failure backoff and the position of work already due.
 			old.entry = entry
 		}
 	}
 }
 
-func nextWork(queue map[string]*work, now, wake time.Time) (string, time.Time) {
-	chosen := ""
+func nextWork(queue map[string]*work, now time.Time) (chosen string, wake time.Time, pending int64) {
 	for path, item := range queue {
-		if item.done {
-			continue
+		if item.failures > 0 || !item.next.After(now) {
+			pending++
 		}
 		if item.next.After(now) {
-			if item.next.Before(wake) {
+			if wake.IsZero() || item.next.Before(wake) {
 				wake = item.next
 			}
 			continue
 		}
-		if chosen == "" || item.attempted.Before(queue[chosen].attempted) ||
-			(item.attempted.Equal(queue[chosen].attempted) && (item.entry.Modified > queue[chosen].entry.Modified ||
+		if chosen == "" || item.next.Before(queue[chosen].next) ||
+			(item.next.Equal(queue[chosen].next) && (item.entry.Modified > queue[chosen].entry.Modified ||
 				(item.entry.Modified == queue[chosen].entry.Modified && path < chosen))) {
 			chosen = path
 		}
 	}
-	return chosen, wake
+	return chosen, wake, pending
 }
 
 func retryDelay(err error, failures int) time.Duration {
@@ -254,13 +241,6 @@ func serverRetryAfter(err error) time.Duration {
 		return throttled.RetryAfter()
 	}
 	return 0
-}
-
-func minTime(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
 }
 
 func jitter(delay time.Duration) time.Duration {

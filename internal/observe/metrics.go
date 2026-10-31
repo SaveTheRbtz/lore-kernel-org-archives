@@ -90,7 +90,7 @@ func NewTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
 	transfer, e3 := meter.Int64ObservableCounter("lore_mirror_transfer",
 		metric.WithDescription("Source pack bytes read and destination request bytes written, including failed attempts"), metric.WithUnit("By"))
 	pending, e4 := meter.Int64ObservableGauge("lore_mirror_pending",
-		metric.WithDescription("Repositories waiting for sync, including backoff, excluding the active repository"), metric.WithUnit("{repository}"))
+		metric.WithDescription("Due or failed repositories waiting for sync, excluding the active repository"), metric.WithUnit("{repository}"))
 	busy, e5 := meter.Int64ObservableGauge("lore_mirror_worker_busy",
 		metric.WithDescription("Whether the single sync worker is active"), metric.WithUnit("1"))
 	workTime, e6 := meter.Float64ObservableCounter("lore_mirror_worker_time",

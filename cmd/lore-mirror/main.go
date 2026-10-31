@@ -36,7 +36,7 @@ func run(log *slog.Logger) error {
 	flag.BoolVar(&cfg.Once, "once", false, "attempt each selected repository once, then exit")
 	flag.BoolVar(&healthcheck, "healthcheck", false, "check the local /healthz endpoint and exit")
 	flag.DurationVar(&cfg.Poll, "poll", time.Minute, "manifest polling interval")
-	flag.DurationVar(&cfg.Rescan, "rescan", 24*time.Hour, "reconcile unchanged repositories at this interval")
+	flag.DurationVar(&cfg.Recheck, "recheck", 10*time.Minute, "recheck repositories at this interval after a successful sync")
 	flag.DurationVar(&cfg.Timeout, "timeout", 30*time.Minute, "maximum time for one repository sync")
 	flag.Int64Var(&cfg.MaxPushBytes, "max-push-bytes", 7*(1<<28), "maximum receive-pack request bytes, below GitHub's 2 GiB limit")
 	flag.Parse()
