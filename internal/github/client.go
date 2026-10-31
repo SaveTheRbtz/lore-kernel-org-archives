@@ -149,27 +149,28 @@ func (g *Client) lookupOrCreate(ctx context.Context, name, desc, listURL string,
 }
 
 func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL, listURL string, expectedID int64) (Repository, error) {
+	fullName := g.org + "/" + name
 	if expectedID != 0 && remote.GetID() != expectedID {
-		return Repository{}, fmt.Errorf("refusing %s/%s: repository ID changed from %d to %d", g.org, name, expectedID, remote.GetID())
+		return Repository{}, fmt.Errorf("refusing %s: repository ID changed from %d to %d", fullName, expectedID, remote.GetID())
 	}
 	if remote.GetID() <= 0 || !strings.EqualFold(remote.GetName(), name) ||
-		!strings.EqualFold(remote.GetFullName(), g.org+"/"+name) ||
+		!strings.EqualFold(remote.GetFullName(), fullName) ||
 		(remote.GetHomepage() != sourceURL && remote.GetHomepage() != listURL) {
-		return Repository{}, fmt.Errorf("refusing to adopt %s/%s: source provenance does not match %s", g.org, name, sourceURL)
+		return Repository{}, fmt.Errorf("refusing to adopt %s: source provenance does not match %s", fullName, sourceURL)
 	}
 	// All epochs share the list homepage. On first adoption, the description must identify the archive.
 	if expectedID == 0 && remote.GetHomepage() == listURL {
 		marker, _, _ := strings.Cut(remote.GetDescription(), ": ")
 		if marker != mirrorDescriptionPrefix+sourceURL {
-			return Repository{}, fmt.Errorf("refusing to adopt %s/%s: description does not identify %s", g.org, name, sourceURL)
+			return Repository{}, fmt.Errorf("refusing to adopt %s: description does not identify %s", fullName, sourceURL)
 		}
 	}
 	if remote.GetPrivate() || remote.GetArchived() || remote.GetFork() {
-		return Repository{}, fmt.Errorf("refusing %s: mirror repository must be public, writable, and not a fork", remote.GetFullName())
+		return Repository{}, fmt.Errorf("refusing %s: mirror repository must be public, writable, and not a fork", fullName)
 	}
 	// Clone URLs returned by the API are never followed.
 	return Repository{
-		ID: remote.GetID(), Name: name, GitURL: "https://github.com/" + g.org + "/" + name + ".git",
+		ID: remote.GetID(), Name: name, GitURL: "https://github.com/" + fullName + ".git",
 		DefaultBranch: remote.GetDefaultBranch(),
 	}, nil
 }
