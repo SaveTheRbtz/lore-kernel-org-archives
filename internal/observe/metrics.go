@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/oauth"
 )
 
@@ -48,7 +49,7 @@ func StartTelemetry(ctx context.Context, project string, health *Health) (*Telem
 	if err != nil {
 		return nil, nil, fmt.Errorf("telemetry instance zone: %w", err)
 	}
-	creds, err := oauth.NewApplicationDefault(ctx, "https://www.googleapis.com/auth/cloud-platform")
+	creds, cancelCredentials, err := telemetryCredentials(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("telemetry credentials: %w", err)
 	}
@@ -59,6 +60,7 @@ func StartTelemetry(ctx context.Context, project string, health *Health) (*Telem
 		otlpmetricgrpc.WithTimeout(10*time.Second),
 	)
 	if err != nil {
+		cancelCredentials()
 		return nil, nil, fmt.Errorf("telemetry exporter: %w", err)
 	}
 	provider := sdkmetric.NewMeterProvider(
@@ -72,13 +74,37 @@ func StartTelemetry(ctx context.Context, project string, health *Health) (*Telem
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter,
 			sdkmetric.WithInterval(time.Minute), sdkmetric.WithTimeout(10*time.Second))),
 	)
+	// The final export may need a new access token after the service context is canceled.
+	shutdown := func(ctx context.Context) error {
+		stop := context.AfterFunc(ctx, cancelCredentials)
+		defer stop()
+		defer cancelCredentials()
+		return provider.Shutdown(ctx)
+	}
 	t, err := newTelemetry(provider.Meter("lore-mirror"), health)
 	if err != nil {
-		_ = provider.Shutdown(ctx)
+		_ = shutdown(ctx)
 		return nil, nil, err
 	}
 	// Shutdown performs a final collection, including gauges before any sync.
-	return t, provider.Shutdown, nil
+	return t, shutdown, nil
+}
+
+// File-backed ADC retains its context for subsequent token refreshes. Honor setup
+// cancellation during discovery, then let the meter provider own that lifetime.
+func telemetryCredentials(setup context.Context) (credentials.PerRPCCredentials, context.CancelFunc, error) {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(setup))
+	stop := context.AfterFunc(setup, cancel)
+	creds, err := oauth.NewApplicationDefault(ctx, "https://www.googleapis.com/auth/cloud-platform")
+	stop()
+	if err == nil {
+		err = setup.Err()
+	}
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return creds, cancel, nil
 }
 
 func newTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
