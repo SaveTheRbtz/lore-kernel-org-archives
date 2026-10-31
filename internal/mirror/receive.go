@@ -1,7 +1,6 @@
 package mirror
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -101,7 +100,7 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 		writer.CloseWithError(err)
 		done <- err
 	}()
-	var remote bytes.Buffer
+	var remote strings.Builder
 	response, receiveErr := r.Client.Do(request)
 	if receiveErr == nil {
 		receiveErr = r.readReceivePackResponse(response, update, &remote)
