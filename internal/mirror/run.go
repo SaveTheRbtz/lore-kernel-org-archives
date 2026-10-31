@@ -30,6 +30,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	client := newHTTPClient()
+	defer client.CloseIdleConnections()
 	var selectionReady atomic.Bool
 	selectionReady.Store(cfg.Lists == "")
 	fetch := func(ctx context.Context) (lore.Manifest, error) {
