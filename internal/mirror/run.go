@@ -33,8 +33,6 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	client := newHTTPClient()
 	defer client.CloseIdleConnections()
 	health := &observe.Health{}
@@ -103,6 +101,8 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if cfg.Once {
 		run = daemon.runOnce
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	finished := make(chan error, 1)
 	go func() { finished <- run(ctx) }()
 	select {
