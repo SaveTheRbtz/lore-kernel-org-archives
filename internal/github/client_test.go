@@ -87,11 +87,14 @@ func TestEnsureRepositoryReconcilesMetadata(t *testing.T) {
 	const description = "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (1 out of 21)"
 	for _, tc := range []struct {
 		name, homepage, description string
+		expectedID                  int64
 		patches                     int32
 	}{
-		{"old format", "https://lore.kernel.org/lkml/git/0.git", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML [epoch 0]", 1},
-		{"new epoch", "https://lore.kernel.org/lkml/", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (1 out of 20)", 1},
-		{"current", "https://lore.kernel.org/lkml/", description, 0},
+		{"old format", "https://lore.kernel.org/lkml/git/0.git", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML [epoch 0]", 0, 1},
+		{"legacy source homepage", "https://lore.kernel.org/lkml/git/0.git", "", 0, 1},
+		{"new epoch", "https://lore.kernel.org/lkml/", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (1 out of 20)", 0, 1},
+		{"current", "https://lore.kernel.org/lkml/", description, 0, 0},
+		{"approved ID with cleared description", "https://lore.kernel.org/lkml/", "", 123, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var patches atomic.Int32
@@ -113,7 +116,7 @@ func TestEnsureRepositoryReconcilesMetadata(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(remote)
 			})
-			if _, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "LKML (1 out of 21)", 123); err != nil {
+			if _, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "LKML (1 out of 21)", tc.expectedID); err != nil {
 				t.Fatal(err)
 			}
 			if patches.Load() != tc.patches {
@@ -129,6 +132,13 @@ func TestEnsureRepositoryRefusesUnsafeAdoption(t *testing.T) {
 		change func(*sdk.Repository)
 	}{
 		{"unrelated", func(r *sdk.Repository) { r.Homepage = sdk.Ptr("https://example.org/unrelated") }},
+		{"wrong epoch", func(r *sdk.Repository) {
+			r.Description = sdk.Ptr("Mirror of https://lore.kernel.org/lkml/git/2.git: LKML")
+		}},
+		{"missing source", func(r *sdk.Repository) { r.Description = nil }},
+		{"source URL prefix", func(r *sdk.Repository) {
+			r.Description = sdk.Ptr("Mirror of https://lore.kernel.org/lkml/git/0.git.bak")
+		}},
 		{"private", func(r *sdk.Repository) { r.Private = sdk.Ptr(true) }},
 		{"archived", func(r *sdk.Repository) { r.Archived = sdk.Ptr(true) }},
 		{"fork", func(r *sdk.Repository) { r.Fork = sdk.Ptr(true) }},
@@ -259,7 +269,7 @@ func TestRepositoryOperationsPropagateRateLimits(t *testing.T) {
 				}
 				if r.Method == http.MethodGet && operation == "metadata" {
 					remote := testRepository("lkml.0", "/lkml/git/0.git")
-					remote.Description = sdk.Ptr("outdated")
+					remote.Description = sdk.Ptr(remote.GetDescription() + ": outdated")
 					_ = json.NewEncoder(w).Encode(remote)
 					return
 				}

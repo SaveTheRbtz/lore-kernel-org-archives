@@ -15,6 +15,8 @@ import (
 	"lore-mirror/internal/retryafter"
 )
 
+const mirrorDescriptionPrefix = "Mirror of "
+
 // Client provisions mirrors and shares installation-token refresh with Git pushes.
 type Client struct {
 	api          *sdk.Client
@@ -76,7 +78,7 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description s
 	sourceURL := lore.Origin + sourcePath
 	list, _, _ := strings.Cut(sourcePath[1:], "/")
 	listURL := lore.Origin + "/" + list + "/"
-	desc := "Mirror of " + sourceURL
+	desc := mirrorDescriptionPrefix + sourceURL
 	if description != "" {
 		desc += ": " + description
 	}
@@ -134,6 +136,13 @@ func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL, lis
 		!strings.EqualFold(remote.GetFullName(), g.org+"/"+name) ||
 		(remote.GetHomepage() != sourceURL && remote.GetHomepage() != listURL) {
 		return Repository{}, fmt.Errorf("refusing to adopt %s/%s: source provenance does not match %s", g.org, name, sourceURL)
+	}
+	// All epochs share the list homepage. On first adoption, the description must identify the archive.
+	if expectedID == 0 && remote.GetHomepage() == listURL {
+		marker, _, _ := strings.Cut(remote.GetDescription(), ": ")
+		if marker != mirrorDescriptionPrefix+sourceURL {
+			return Repository{}, fmt.Errorf("refusing to adopt %s/%s: description does not identify %s", g.org, name, sourceURL)
+		}
 	}
 	if remote.GetPrivate() || remote.GetArchived() || remote.GetFork() {
 		return Repository{}, fmt.Errorf("refusing %s: mirror repository must be public, writable, and not a fork", remote.GetFullName())
