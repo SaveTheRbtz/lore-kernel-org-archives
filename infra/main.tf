@@ -214,7 +214,6 @@ resource "google_compute_instance_template" "mirror" {
   machine_type = "e2-medium"
   labels       = { app = "lore-mirror" }
   disk {
-    auto_delete  = true
     source_image = "projects/cos-cloud/global/images/cos-stable-121-18867-652-7"
     disk_size_gb = 20
     disk_type    = "pd-standard"
