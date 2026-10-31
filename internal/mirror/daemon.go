@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
+	"sync"
 	"time"
 
 	"lore-mirror/internal/lore"
@@ -69,22 +70,16 @@ func (d *daemon) pollManifests(ctx context.Context, updates chan lore.Manifest) 
 func (d *daemon) run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	updates := make(chan lore.Manifest, 1)
-	pollerDone := make(chan struct{})
-	var pollerErr error
-	go func() {
-		defer close(pollerDone)
-		pollerErr = d.pollManifests(ctx, updates)
-	}()
+	var workers sync.WaitGroup
+	pollerResult := make(chan error, 1)
+	workers.Go(func() { pollerResult <- d.pollManifests(ctx, updates) })
 	finished := make(chan error, 1)
 	var active *work
 	var activePath string
 	var activeEntry lore.ManifestEntry
 	defer func() {
 		cancel()
-		if active != nil {
-			<-finished //nolint:errcheck // After cancellation, only wait for the worker to exit.
-		}
-		<-pollerDone
+		workers.Wait()
 	}()
 	queue := map[string]*work{}
 	defer d.queue(0)
@@ -103,10 +98,9 @@ func (d *daemon) run(ctx context.Context) error {
 		path, wake, pending := nextWork(queue, now, activePath)
 		if active == nil && path != "" && !cooldown.After(now) {
 			activePath, active = path, queue[path]
-			activeEntry = active.entry
-			go func(path string, entry lore.ManifestEntry) {
-				finished <- d.syncWork(ctx, path, entry)
-			}(path, activeEntry)
+			entry := active.entry
+			activeEntry = entry
+			workers.Go(func() { finished <- d.syncWork(ctx, path, entry) })
 			continue
 		}
 		d.queue(pending)
@@ -121,8 +115,8 @@ func (d *daemon) run(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-		case <-pollerDone:
-			return pollerErr
+		case err := <-pollerResult:
+			return err
 		case manifest := <-updates:
 			d.reconcile(queue, manifest)
 		case err := <-finished:
