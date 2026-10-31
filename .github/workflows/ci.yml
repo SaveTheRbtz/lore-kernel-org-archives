@@ -17,7 +17,6 @@ concurrency:
 env:
   GO_VERSION: 1.27.x
   CGO_ENABLED: "0"
-  GOTOOLCHAIN: local
 
 jobs:
   build-test:
