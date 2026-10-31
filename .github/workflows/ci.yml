@@ -59,6 +59,4 @@ jobs:
       - *checkout
       - *setup-go
       - name: Scan for vulnerabilities
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
-          govulncheck -test ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -test ./...
