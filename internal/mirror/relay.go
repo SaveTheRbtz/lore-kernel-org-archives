@@ -174,34 +174,33 @@ func (s *relaySession) push(ctx context.Context, commands []*packp.Command) (int
 	if s.destination.Capabilities.Supports(capability.Atomic) {
 		_ = update.Capabilities.Set(capability.Atomic)
 	}
-	for _, command := range commands {
-		if command.Action() == packp.Delete {
-			if !s.destination.Capabilities.Supports(capability.DeleteRefs) {
-				return 0, errors.New("destination does not support delete-refs")
-			}
-			_ = update.Capabilities.Set(capability.DeleteRefs)
-		}
-	}
 
 	fetch := packp.NewUploadPackRequest() // Full history; no thin packs or multi-ACK.
-	known := make(map[plumbing.Hash]bool)
+	seen := make(map[plumbing.Hash]bool)
 	for name, hash := range s.destination.References {
-		known[hash] = true
+		seen[hash] = true
 		if strings.HasPrefix(name, "refs/heads/") && hash != plumbing.ZeroHash {
 			fetch.Haves = append(fetch.Haves, hash)
 		}
 	}
 	needsPack := false
-	wanted := make(map[plumbing.Hash]bool)
+	hasDeletes := false
 	for _, command := range commands {
 		if command.New == plumbing.ZeroHash {
+			hasDeletes = true
 			continue
 		}
 		needsPack = true
-		if !known[command.New] && !wanted[command.New] {
+		if !seen[command.New] {
 			fetch.Wants = append(fetch.Wants, command.New)
-			wanted[command.New] = true
+			seen[command.New] = true
 		}
+	}
+	if hasDeletes {
+		if !s.destination.Capabilities.Supports(capability.DeleteRefs) {
+			return 0, errors.New("destination does not support delete-refs")
+		}
+		_ = update.Capabilities.Set(capability.DeleteRefs)
 	}
 	if len(fetch.Wants) > 0 {
 		if s.source.Capabilities.Supports(capability.Sideband64k) {
