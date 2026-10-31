@@ -20,7 +20,6 @@ ExecStart=/usr/bin/docker --config /run/lore-mirror-docker run \
     --memory=2g --memory-swap=2g --pids-limit=128 \
     --publish=8080:8080 --log-driver=gcplogs \
     --env=GOOGLE_CLOUD_PROJECT=${project} \
-    --env=GITHUB_ORG=lore-kernel-org-archives \
     --env=GITHUB_APP_SECRET=${github_app_secret} \
     ${image} -lists=${lists}
 ExecStop=/usr/bin/docker stop -t 20 lore-mirror
