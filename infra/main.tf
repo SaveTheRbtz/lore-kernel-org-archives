@@ -158,6 +158,14 @@ resource "google_compute_subnetwork" "mirror" {
   private_ip_google_access = true
 }
 
+data "google_netblock_ip_ranges" "iap_forwarders" {
+  range_type = "iap-forwarders"
+}
+
+data "google_netblock_ip_ranges" "health_checkers" {
+  range_type = "health-checkers"
+}
+
 resource "google_compute_firewall" "iap_ssh" {
   name    = "lore-mirror-iap-ssh"
   network = google_compute_network.mirror.name
@@ -165,7 +173,7 @@ resource "google_compute_firewall" "iap_ssh" {
     protocol = "tcp"
     ports    = ["22"]
   }
-  source_ranges           = ["35.235.240.0/20"]
+  source_ranges           = data.google_netblock_ip_ranges.iap_forwarders.cidr_blocks_ipv4
   target_service_accounts = [google_service_account.runtime.email]
 }
 
@@ -176,7 +184,7 @@ resource "google_compute_firewall" "health" {
     protocol = "tcp"
     ports    = ["8080"]
   }
-  source_ranges           = ["130.211.0.0/22", "35.191.0.0/16"]
+  source_ranges           = data.google_netblock_ip_ranges.health_checkers.cidr_blocks_ipv4
   target_service_accounts = [google_service_account.runtime.email]
 }
 
