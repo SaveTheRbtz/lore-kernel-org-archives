@@ -291,7 +291,7 @@ func TestRelaySidebandProgressKeepsSyncHealthy(t *testing.T) {
 			return ctx.Err()
 		}
 		health := &observe.Health{}
-		finish := health.Begin("sync")
+		finish := health.Begin(observe.Sync)
 		defer finish()
 		r := Relay{Client: s.client, MaxPushBytes: DefaultMaxPushBytes, health: health}
 		var syncErr error

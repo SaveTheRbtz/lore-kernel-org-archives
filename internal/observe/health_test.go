@@ -20,15 +20,15 @@ func TestHealthEndpointTracksProgressAndIndependentOperations(t *testing.T) {
 			}
 		}
 		check(http.StatusOK)
-		finishSync := health.Begin("sync")
+		finishSync := health.Begin(Sync)
 		time.Sleep(4 * time.Minute)
-		health.Progress("sync")
+		health.SyncProgress()
 		time.Sleep(4 * time.Minute)
 		check(http.StatusOK)
 		time.Sleep(time.Minute)
-		finishDiscovery := health.Begin("discovery")
+		finishDiscovery := health.Begin(Discovery)
 		check(http.StatusServiceUnavailable) // Fresh discovery cannot hide a stuck sync.
-		health.Progress("sync")
+		health.SyncProgress()
 		check(http.StatusOK)
 		time.Sleep(5 * time.Minute)
 		finishSync()

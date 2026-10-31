@@ -76,12 +76,12 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 			return err
 		}
 		repositoryIDs[sourcePath] = repo.ID
-		health.Progress("sync")
+		health.SyncProgress()
 		credential, err := github.Token(ctx)
 		if err != nil {
 			return err
 		}
-		health.Progress("sync")
+		health.SyncProgress()
 		result, err := relay.Sync(ctx, lore.Origin+sourcePath, repo.GitURL, credential, repo.DefaultBranch, func(branch string) error {
 			return github.SetDefaultBranch(ctx, repo.Name, branch)
 		})

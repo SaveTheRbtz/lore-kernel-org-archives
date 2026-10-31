@@ -87,12 +87,12 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 	if err != nil {
 		return result, fmt.Errorf("advertise source: %w", err)
 	}
-	r.health.Progress("sync")
+	r.health.SyncProgress()
 	dst, err := down.AdvertisedReferencesContext(ctx)
 	if err != nil {
 		return result, fmt.Errorf("advertise destination: %w", err)
 	}
-	r.health.Progress("sync")
+	r.health.SyncProgress()
 	sourceRefs, err := relayRefs(src, true)
 	if err != nil {
 		return result, fmt.Errorf("source: %w", err)
@@ -127,7 +127,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 		if err := setDefault(result.DefaultBranch); err != nil {
 			return result, fmt.Errorf("set default branch to %q: %w", result.DefaultBranch, err)
 		}
-		r.health.Progress("sync")
+		r.health.SyncProgress()
 	}
 	if !staged {
 		return result, nil
@@ -146,12 +146,12 @@ func (s *relaySession) reconcile(ctx context.Context, want map[string]plumbing.H
 	if err != nil {
 		return written, false, err
 	}
-	s.relay.health.Progress("sync")
+	s.relay.health.SyncProgress()
 	dst, err := s.receive.AdvertisedReferencesContext(ctx)
 	if err != nil {
 		return written, false, fmt.Errorf("verify destination: %w", err)
 	}
-	s.relay.health.Progress("sync")
+	s.relay.health.SyncProgress()
 	refs, err := relayRefs(dst, false)
 	if err != nil {
 		return written, false, fmt.Errorf("verify destination: %w", err)
@@ -220,7 +220,7 @@ func (s *relaySession) push(ctx context.Context, commands []*packp.Command) (int
 			}
 			return 0, fmt.Errorf("upload-pack: %w", fetchErr)
 		}
-		s.relay.health.Progress("sync")
+		s.relay.health.SyncProgress()
 		defer func() { _ = response.Close() }()
 		var pack io.Reader = response
 		if fetch.Capabilities.Supports(capability.Sideband64k) {
@@ -313,7 +313,7 @@ type relayCountingReader struct {
 type relayProgress struct{ health *observe.Health }
 
 func (p relayProgress) Write(b []byte) (int, error) {
-	p.health.Progress("sync")
+	p.health.SyncProgress()
 	return len(b), nil
 }
 
@@ -321,7 +321,7 @@ func (r *relayCountingReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
 	r.metrics.AddBytes("receive", int64(n))
 	if n > 0 {
-		r.health.Progress("sync")
+		r.health.SyncProgress()
 	}
 	return n, err
 }

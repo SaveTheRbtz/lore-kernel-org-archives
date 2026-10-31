@@ -12,49 +12,45 @@ import (
 
 const stuckAfter = 5 * time.Minute
 
+// Activity identifies an operation tracked by health and telemetry.
+type Activity uint8
+
+const (
+	Discovery Activity = iota
+	Sync
+	activityCount
+)
+
 // Discovery and sync run independently. Idle time and retry backoff are healthy;
 // only an active operation that stops making progress can become stuck.
 type Health struct {
 	// Ready, when set, reports whether startup validation has finished.
 	Ready func() bool
 	mu    sync.Mutex
-	last  [2]time.Time
+	last  [activityCount]time.Time
 }
 
-func healthActivity(operation string) int {
-	switch operation {
-	case "discovery":
-		return 0
-	case "sync":
-		return 1
-	default:
-		return -1
-	}
-}
-
-func (h *Health) Begin(operation string) func() {
-	index := healthActivity(operation)
-	if h == nil || index < 0 {
+func (h *Health) Begin(activity Activity) func() {
+	if h == nil || activity >= activityCount {
 		return func() {}
 	}
 	h.mu.Lock()
-	h.last[index] = time.Now()
+	h.last[activity] = time.Now()
 	h.mu.Unlock()
 	return func() {
 		h.mu.Lock()
-		h.last[index] = time.Time{}
+		h.last[activity] = time.Time{}
 		h.mu.Unlock()
 	}
 }
 
-func (h *Health) Progress(operation string) {
-	index := healthActivity(operation)
-	if h == nil || index < 0 {
+func (h *Health) SyncProgress() {
+	if h == nil {
 		return
 	}
 	h.mu.Lock()
-	if !h.last[index].IsZero() {
-		h.last[index] = time.Now()
+	if !h.last[Sync].IsZero() {
+		h.last[Sync] = time.Now()
 	}
 	h.mu.Unlock()
 }

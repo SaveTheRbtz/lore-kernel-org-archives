@@ -68,7 +68,7 @@ func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 	w.n += int64(n)
 	w.metrics.AddBytes("send", int64(n))
 	if n > 0 {
-		w.health.Progress("sync")
+		w.health.SyncProgress()
 	}
 	if err == nil && tooLarge {
 		err = ErrPushTooLarge

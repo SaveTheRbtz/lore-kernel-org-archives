@@ -173,24 +173,24 @@ func (d *daemon) runOnce(ctx context.Context) error {
 }
 
 func (d *daemon) discover(ctx context.Context) (lore.Manifest, error) {
-	finish := d.health.Begin("discovery")
+	finish := d.health.Begin(observe.Discovery)
 	defer finish()
 	started := time.Now()
 	manifest, err := d.fetch(ctx)
-	d.metrics.Operation(ctx, "discovery", started, err)
+	d.metrics.Operation(ctx, observe.Discovery, started, err)
 	return manifest, err
 }
 
 func (d *daemon) syncWork(ctx context.Context, path string, entry lore.ManifestEntry) error {
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
-	finish := d.health.Begin("sync")
+	finish := d.health.Begin(observe.Sync)
 	defer finish()
 	d.metrics.Busy(true)
 	defer d.metrics.Busy(false)
 	started := time.Now()
 	err := d.sync(ctx, path, entry)
-	d.metrics.Operation(ctx, "sync", started, err)
+	d.metrics.Operation(ctx, observe.Sync, started, err)
 	return err
 }
 

@@ -136,8 +136,10 @@ func newTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
 	return t, err
 }
 
-func (t *Telemetry) Operation(ctx context.Context, operation string, started time.Time, err error) {
-	if t == nil || (operation != "discovery" && operation != "sync") {
+var activityNames = [activityCount]string{Discovery: "discovery", Sync: "sync"}
+
+func (t *Telemetry) Operation(ctx context.Context, activity Activity, started time.Time, err error) {
+	if t == nil || activity >= activityCount {
 		return
 	}
 	result := "success"
@@ -146,7 +148,7 @@ func (t *Telemetry) Operation(ctx context.Context, operation string, started tim
 	} else if err != nil {
 		result = "error"
 	}
-	attrs := metric.WithAttributes(attribute.String("operation", operation), attribute.String("result", result))
+	attrs := metric.WithAttributes(attribute.String("operation", activityNames[activity]), attribute.String("result", result))
 	t.operations.Add(ctx, 1, attrs)
 	t.duration.Record(ctx, time.Since(started).Seconds(), attrs)
 }
