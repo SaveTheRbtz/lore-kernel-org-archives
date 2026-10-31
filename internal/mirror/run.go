@@ -89,7 +89,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 			return fmt.Errorf("sync attempt failed after %s, request_bytes=%d: %w", time.Since(started).Round(time.Millisecond), result.Bytes, err)
 		}
 		log.Info("synced", "source", sourcePath, "repository", repo.Name, "duration", time.Since(started).String(),
-			"changed", result.Changed, "refs", len(result.SourceRefs), "bytes", result.Bytes)
+			"changed", result.Changed, "refs", result.RefCount, "bytes", result.Bytes)
 		return nil
 	}
 	daemon := daemon{fetch: fetch, sync: syncRepo, log: log, metrics: metrics, queue: metrics.Queue, health: health, recheck: cfg.Recheck, timeout: cfg.Timeout}

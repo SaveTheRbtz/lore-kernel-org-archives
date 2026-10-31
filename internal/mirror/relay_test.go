@@ -35,6 +35,9 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if result.RefCount != 2 {
+		t.Fatalf("source ref count = %d, want 2", result.RefCount)
+	}
 	if result.DefaultBranch != "master" {
 		t.Fatalf("default branch = %q, want master", result.DefaultBranch)
 	}

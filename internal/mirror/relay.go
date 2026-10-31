@@ -52,7 +52,7 @@ type relaySession struct {
 
 type SyncResult struct {
 	Changed       bool
-	SourceRefs    map[string]plumbing.Hash
+	RefCount      int
 	DefaultBranch string
 	Bytes         int64
 }
@@ -93,15 +93,16 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 		return result, fmt.Errorf("advertise destination: %w", err)
 	}
 	r.health.Progress("sync")
-	result.SourceRefs, err = relayRefs(src, true)
+	sourceRefs, err := relayRefs(src, true)
 	if err != nil {
 		return result, fmt.Errorf("source: %w", err)
 	}
+	result.RefCount = len(sourceRefs)
 	destinationRefs, err := relayRefs(dst, false)
 	if err != nil {
 		return result, fmt.Errorf("destination: %w", err)
 	}
-	result.DefaultBranch = relayDefaultBranch(src, result.SourceRefs)
+	result.DefaultBranch = relayDefaultBranch(src, sourceRefs)
 	session := relaySession{
 		relay: r, upload: up, receive: down,
 		source: src, destination: dst, destinationRefs: destinationRefs,
@@ -109,14 +110,14 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 	}
 	changingDefault := result.DefaultBranch != "" && result.DefaultBranch != currentDefault
 	oldRef := "refs/heads/" + currentDefault
-	deletingCurrentDefault := destinationRefs[oldRef] != plumbing.ZeroHash && result.SourceRefs[oldRef] == plumbing.ZeroHash
-	firstTarget := result.SourceRefs
+	deletingCurrentDefault := destinationRefs[oldRef] != plumbing.ZeroHash && sourceRefs[oldRef] == plumbing.ZeroHash
+	firstTarget := sourceRefs
 	staged := changingDefault && deletingCurrentDefault
 	if staged {
 		// GitHub rejects deletion of its current default. Publish only the replacement first.
 		firstTarget = maps.Clone(destinationRefs)
 		newRef := "refs/heads/" + result.DefaultBranch
-		firstTarget[newRef] = result.SourceRefs[newRef]
+		firstTarget[newRef] = sourceRefs[newRef]
 	}
 	result.Bytes, result.Changed, err = session.reconcile(ctx, firstTarget)
 	if err != nil {
@@ -131,7 +132,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 	if !staged {
 		return result, nil
 	}
-	n, changed, err := session.reconcile(ctx, result.SourceRefs)
+	n, changed, err := session.reconcile(ctx, sourceRefs)
 	result.Bytes += n
 	result.Changed = result.Changed || changed
 	return result, err
