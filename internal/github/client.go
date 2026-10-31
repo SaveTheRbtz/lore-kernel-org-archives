@@ -105,9 +105,9 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath string, summar
 			return Repository{}, fmt.Errorf("refusing to recreate %s/%s: approved repository %d is missing", g.org, name, expectedID)
 		}
 		remote, _, err = g.api.Repositories.Create(ctx, g.org, &sdk.Repository{
-			Name: sdk.Ptr(name), Description: sdk.Ptr(desc), Homepage: sdk.Ptr(listURL),
-			Private: sdk.Ptr(false), AutoInit: sdk.Ptr(false),
-			HasIssues: sdk.Ptr(false), HasWiki: sdk.Ptr(false), HasProjects: sdk.Ptr(false),
+			Name: new(name), Description: new(desc), Homepage: new(listURL),
+			Private: new(false), AutoInit: new(false),
+			HasIssues: new(false), HasWiki: new(false), HasProjects: new(false),
 		})
 		if err != nil {
 			createErr := retryPolicy(err)
@@ -129,7 +129,7 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath string, summar
 	}
 	if summary != nil && (remote.GetDescription() != desc || remote.GetHomepage() != listURL) {
 		remote, _, err = g.api.Repositories.Edit(ctx, g.org, name, &sdk.Repository{
-			Description: sdk.Ptr(desc), Homepage: sdk.Ptr(listURL),
+			Description: new(desc), Homepage: new(listURL),
 		})
 		if err != nil {
 			return Repository{}, retryPolicy(err)
@@ -166,7 +166,7 @@ func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL, lis
 }
 
 func (g *Client) SetDefaultBranch(ctx context.Context, repoName, branch string) error {
-	_, _, err := g.api.Repositories.Edit(ctx, g.org, repoName, &sdk.Repository{DefaultBranch: sdk.Ptr(branch)})
+	_, _, err := g.api.Repositories.Edit(ctx, g.org, repoName, &sdk.Repository{DefaultBranch: new(branch)})
 	return retryPolicy(err)
 }
 
