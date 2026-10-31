@@ -30,23 +30,24 @@ func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 // Both ends are real in-memory Git object stores behind smart-HTTP handlers.
 // The test server uses go-git's pack encoder/decoder, without invoking Git.
 type relayTestServer struct {
-	t           *testing.T
-	client      *http.Client
-	sourceMu    sync.Mutex
-	destMu      sync.Mutex
-	source      *memory.Storage
-	destination *memory.Storage
-	uploads     int
-	pushes      int
-	haves       []plumbing.Hash
-	beforePush  func()
-	beforePack  func(http.ResponseWriter) error
-	beforeHTTP  func(http.ResponseWriter, *http.Request) bool
-	setDefault  func(string) error
-	failSource  bool
-	receiveBand bool
-	omitStatus  bool
-	skipUpdate  bool
+	t                *testing.T
+	client           *http.Client
+	sourceMu         sync.Mutex
+	destMu           sync.Mutex
+	source           *memory.Storage
+	destination      *memory.Storage
+	uploads          int
+	pushes           int
+	haves            []plumbing.Hash
+	beforePush       func()
+	beforePack       func(http.ResponseWriter) error
+	beforeHTTP       func(http.ResponseWriter, *http.Request) bool
+	setDefault       func(string) error
+	failSource       bool
+	receiveBand      bool
+	omitStatus       bool
+	skipUpdate       bool
+	shallowAfterPush bool
 }
 
 func newRelayTestServer(t *testing.T) *relayTestServer {
@@ -126,6 +127,9 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 				return sessionErr
 			}
 			adv, err = session.AdvertisedReferencesContext(r.Context())
+			if err == nil && s.shallowAfterPush && s.pushes > 0 {
+				adv.Shallows = []plumbing.Hash{adv.References[string(plumbing.Master)]}
+			}
 			if err == nil && s.receiveBand {
 				err = adv.Capabilities.Set(capability.Sideband64k)
 			}

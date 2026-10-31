@@ -216,11 +216,12 @@ func TestRelaySourceFailureAndConcurrentDestinationChange(t *testing.T) {
 
 func TestRelayRequiresCompleteStatusAndReadBack(t *testing.T) {
 	for _, tc := range []struct {
-		name                   string
-		omitStatus, skipUpdate bool
+		name                                     string
+		omitStatus, skipUpdate, shallowAfterPush bool
 	}{
-		{"missing status", true, false},
-		{"false success", false, true},
+		{name: "missing status", omitStatus: true},
+		{name: "false success", skipUpdate: true},
+		{name: "shallow readback", shallowAfterPush: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newRelayTestServer(t)
@@ -228,6 +229,7 @@ func TestRelayRequiresCompleteStatusAndReadBack(t *testing.T) {
 			relayTestSetRef(t, s.source, "refs/heads/master", hash)
 			s.omitStatus = tc.omitStatus
 			s.skipUpdate = tc.skipUpdate
+			s.shallowAfterPush = tc.shallowAfterPush
 			if _, err := s.sync(t, 0); err == nil {
 				t.Fatal("invalid receiver success accepted")
 			}

@@ -92,19 +92,13 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 		return result, fmt.Errorf("advertise destination: %w", err)
 	}
 	r.health.Progress("sync")
-	if err := relayCheckFormat(src); err != nil {
-		return result, fmt.Errorf("source: %w", err)
-	}
-	if err := relayCheckFormat(dst); err != nil {
-		return result, fmt.Errorf("destination: %w", err)
-	}
 	result.SourceRefs, err = relayRefs(src, true)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("source: %w", err)
 	}
 	destinationRefs, err := relayRefs(dst, false)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("destination: %w", err)
 	}
 	result.DefaultBranch = relayDefaultBranch(src, result.SourceRefs)
 	session := relaySession{
@@ -158,7 +152,7 @@ func (s *relaySession) reconcile(ctx context.Context, want map[string]plumbing.H
 	s.relay.health.Progress("sync")
 	refs, err := relayRefs(dst, false)
 	if err != nil {
-		return written, false, err
+		return written, false, fmt.Errorf("verify destination: %w", err)
 	}
 	if !maps.Equal(want, refs) {
 		return written, false, errors.New("destination refs differ after push; retry from fresh advertisements")
@@ -255,19 +249,15 @@ func relayEndpoint(raw string) (*transport.Endpoint, error) {
 	return transport.NewEndpoint(strings.TrimRight(raw, "/"))
 }
 
-func relayCheckFormat(adv *packp.AdvRefs) error {
+func relayRefs(adv *packp.AdvRefs, source bool) (map[string]plumbing.Hash, error) {
 	for _, format := range adv.Capabilities.Get(capability.ObjectFormat) {
 		if format != "sha1" {
-			return fmt.Errorf("unsupported Git object format %q", format)
+			return nil, fmt.Errorf("unsupported Git object format %q", format)
 		}
 	}
 	if len(adv.Shallows) != 0 {
-		return errors.New("shallow repositories cannot provide a complete mirror")
+		return nil, errors.New("shallow repositories cannot provide a complete mirror")
 	}
-	return nil
-}
-
-func relayRefs(adv *packp.AdvRefs, source bool) (map[string]plumbing.Hash, error) {
 	refs := make(map[string]plumbing.Hash)
 	for name, hash := range adv.References {
 		if !strings.HasPrefix(name, "refs/") || strings.HasSuffix(name, "^{}") {
