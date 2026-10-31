@@ -2,6 +2,7 @@ package mirror
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha1"
 	"errors"
@@ -277,19 +278,18 @@ func relayRefs(adv *packp.AdvRefs, source bool) (map[string]plumbing.Hash, error
 }
 
 func relayCommands(source, destination map[string]plumbing.Hash) []*packp.Command {
-	names := make(map[string]bool, len(source)+len(destination))
-	for name := range source {
-		names[name] = true
-	}
-	for name := range destination {
-		names[name] = true
-	}
 	var commands []*packp.Command
-	for _, name := range slices.Sorted(maps.Keys(names)) {
-		if source[name] != destination[name] {
-			commands = append(commands, &packp.Command{Name: plumbing.ReferenceName(name), Old: destination[name], New: source[name]})
+	for name, tip := range source {
+		if old := destination[name]; old != tip {
+			commands = append(commands, &packp.Command{Name: plumbing.ReferenceName(name), Old: old, New: tip})
 		}
 	}
+	for name, old := range destination {
+		if _, exists := source[name]; !exists {
+			commands = append(commands, &packp.Command{Name: plumbing.ReferenceName(name), Old: old})
+		}
+	}
+	slices.SortFunc(commands, func(a, b *packp.Command) int { return cmp.Compare(a.Name, b.Name) })
 	return commands
 }
 
