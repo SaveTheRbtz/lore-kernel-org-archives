@@ -86,8 +86,7 @@ func (h *Health) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.Stuck() {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("stuck\n"))
+		http.Error(w, "stuck", http.StatusServiceUnavailable)
 		return
 	}
 	_, _ = w.Write([]byte("ok\n"))
