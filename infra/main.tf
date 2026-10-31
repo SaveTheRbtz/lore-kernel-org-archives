@@ -197,7 +197,6 @@ resource "google_compute_firewall" "health" {
 resource "google_compute_health_check" "mirror" {
   name                = "lore-mirror"
   check_interval_sec  = 30
-  timeout_sec         = 5
   healthy_threshold   = 1
   unhealthy_threshold = 3
   http_health_check {
