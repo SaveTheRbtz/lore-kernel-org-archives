@@ -19,7 +19,10 @@ import (
 	"lore-mirror/internal/observe"
 )
 
-const maxDiagnosticBytes = 4096
+const (
+	gitAuthUsername    = "x-access-token"
+	maxDiagnosticBytes = 4096
+)
 
 type relayLimitedWriter struct {
 	w       io.Writer
@@ -42,7 +45,7 @@ func redactGitCredentials(message, token string) string {
 	if token == "" || message == "" {
 		return message
 	}
-	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	basic := base64.StdEncoding.EncodeToString([]byte(gitAuthUsername + ":" + token))
 	return strings.NewReplacer(basic, "[redacted]", token, "[redacted]").Replace(message)
 }
 
@@ -104,7 +107,7 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 		}
 		return 0, err
 	}
-	request.SetBasicAuth("x-access-token", token)
+	request.SetBasicAuth(gitAuthUsername, token)
 	request.Header.Set("Content-Type", "application/x-git-receive-pack-request")
 	request.Header.Set("Accept", "application/x-git-receive-pack-result")
 	request.Header.Set("User-Agent", "lore-mirror")

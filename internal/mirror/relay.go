@@ -76,7 +76,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 		return result, err
 	}
 	defer func() { _ = up.Close() }()
-	auth := &githttp.BasicAuth{Username: "x-access-token", Password: token}
+	auth := &githttp.BasicAuth{Username: gitAuthUsername, Password: token}
 	down, err := gitClient.NewReceivePackSession(destination, auth)
 	if err != nil {
 		return result, err
