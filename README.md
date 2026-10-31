@@ -81,7 +81,7 @@ gcloud logging read 'resource.type="gce_instance_group_manager"
   --project=kernelorg-mirror --freshness=1h --limit=10
 ```
 
-Discovery and successful repository rechecks use the same `-recheck` interval (default ten minutes), plus jitter. Each new archive gets an independent initial delay between zero and that interval. One worker processes archives and retries failures with backoff. Discovering new mail makes an archive due immediately while preserving failure backoff. Restarting is safe: each sync compares against GitHub's current refs and verifies the result after pushing.
+Discovery and successful repository rechecks use the same `-recheck` interval (default one hour), plus jitter. Each new archive gets an independent initial delay between zero and that interval. One worker chooses randomly among ready archives and retries failures with backoff; `-once` also uses a shuffled order. Discovering new mail makes an archive due immediately while preserving failure backoff. Restarting is safe: each sync compares against GitHub's current refs and verifies the result after pushing.
 
 ## Limits
 

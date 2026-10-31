@@ -31,7 +31,7 @@ func run(log *slog.Logger) error {
 	flag.StringVar(&cfg.Lists, "lists", "", "comma-separated inboxes to mirror; empty means all")
 	flag.BoolVar(&cfg.Discover, "discover", false, "print inventory and exit without contacting GitHub")
 	flag.BoolVar(&cfg.Once, "once", false, "attempt each selected repository once, then exit")
-	flag.DurationVar(&cfg.Recheck, "recheck", 10*time.Minute, "interval for manifest discovery and successful repository rechecks, plus jitter")
+	flag.DurationVar(&cfg.Recheck, "recheck", time.Hour, "interval for manifest discovery and successful repository rechecks, plus jitter")
 	flag.DurationVar(&cfg.Timeout, "timeout", 30*time.Minute, "maximum time for one repository sync")
 	flag.Int64Var(&cfg.MaxPushBytes, "max-push-bytes", mirror.DefaultMaxPushBytes, "maximum receive-pack request bytes, below GitHub's 2 GiB limit")
 	flag.Parse()

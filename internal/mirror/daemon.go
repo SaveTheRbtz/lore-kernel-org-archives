@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
+	"slices"
 	"time"
 
 	"lore-mirror/internal/lore"
@@ -150,7 +152,9 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	}
 	defer d.queue(0)
 	failed := 0
-	for index, path := range lore.OrderedPaths(manifest) {
+	paths := slices.Collect(maps.Keys(manifest))
+	rand.Shuffle(len(paths), func(i, j int) { paths[i], paths[j] = paths[j], paths[i] })
+	for index, path := range paths {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -208,13 +212,14 @@ func (d *daemon) reconcile(queue map[string]*work, manifest lore.Manifest) {
 			if changed && old.failures == 0 && old.next.After(now) {
 				old.next = now
 			}
-			// Keep failure backoff and the position of work already due.
+			// Keep failure backoff and deadlines of work already due.
 			old.entry = entry
 		}
 	}
 }
 
 func nextWork(queue map[string]*work, now time.Time, active string) (chosen string, wake time.Time, pending int64) {
+	due := 0
 	for path, item := range queue {
 		if path == active {
 			continue
@@ -228,9 +233,8 @@ func nextWork(queue map[string]*work, now time.Time, active string) (chosen stri
 			}
 			continue
 		}
-		if chosen == "" || item.next.Before(queue[chosen].next) ||
-			(item.next.Equal(queue[chosen].next) && (item.entry.Modified > queue[chosen].entry.Modified ||
-				(item.entry.Modified == queue[chosen].entry.Modified && path < chosen))) {
+		due++
+		if rand.N(due) == 0 {
 			chosen = path
 		}
 	}
