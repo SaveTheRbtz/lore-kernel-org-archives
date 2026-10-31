@@ -82,25 +82,15 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 		return result, err
 	}
 	defer func() { _ = down.Close() }()
-	src, err := up.AdvertisedReferencesContext(ctx)
+	src, sourceRefs, err := r.advertisedRefs(ctx, up, true)
 	if err != nil {
 		return result, fmt.Errorf("advertise source: %w", err)
 	}
-	r.health.SyncProgress()
-	dst, err := down.AdvertisedReferencesContext(ctx)
+	dst, destinationRefs, err := r.advertisedRefs(ctx, down, false)
 	if err != nil {
 		return result, fmt.Errorf("advertise destination: %w", err)
 	}
-	r.health.SyncProgress()
-	sourceRefs, err := relayRefs(src, true)
-	if err != nil {
-		return result, fmt.Errorf("source: %w", err)
-	}
 	result.RefCount = len(sourceRefs)
-	destinationRefs, err := relayRefs(dst, false)
-	if err != nil {
-		return result, fmt.Errorf("destination: %w", err)
-	}
 	defaultBranch := relayDefaultBranch(src, sourceRefs)
 	session := relaySession{
 		relay: r, upload: up, receive: down,
@@ -143,12 +133,7 @@ func (s *relaySession) reconcile(ctx context.Context, want map[string]plumbing.H
 		return err
 	}
 	s.relay.health.SyncProgress()
-	dst, err := s.receive.AdvertisedReferencesContext(ctx)
-	if err != nil {
-		return fmt.Errorf("verify destination: %w", err)
-	}
-	s.relay.health.SyncProgress()
-	refs, err := relayRefs(dst, false)
+	dst, refs, err := s.relay.advertisedRefs(ctx, s.receive, false)
 	if err != nil {
 		return fmt.Errorf("verify destination: %w", err)
 	}
@@ -246,14 +231,19 @@ func relayEndpoint(raw string) (*transport.Endpoint, error) {
 	return transport.NewEndpoint(strings.TrimRight(raw, "/"))
 }
 
-func relayRefs(adv *packp.AdvRefs, source bool) (map[string]plumbing.Hash, error) {
+func (r *Relay) advertisedRefs(ctx context.Context, session transport.Session, source bool) (*packp.AdvRefs, map[string]plumbing.Hash, error) {
+	adv, err := session.AdvertisedReferencesContext(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	r.health.SyncProgress()
 	for _, format := range adv.Capabilities.Get(capability.ObjectFormat) {
 		if format != "sha1" {
-			return nil, fmt.Errorf("unsupported Git object format %q", format)
+			return nil, nil, fmt.Errorf("unsupported Git object format %q", format)
 		}
 	}
 	if len(adv.Shallows) != 0 {
-		return nil, errors.New("shallow repositories cannot provide a complete mirror")
+		return nil, nil, errors.New("shallow repositories cannot provide a complete mirror")
 	}
 	refs := make(map[string]plumbing.Hash)
 	for name, hash := range adv.References {
@@ -262,16 +252,16 @@ func relayRefs(adv *packp.AdvRefs, source bool) (map[string]plumbing.Hash, error
 		}
 		if strings.HasPrefix(name, "refs/pull/") {
 			if source {
-				return nil, fmt.Errorf("source ref %q occupies GitHub's reserved namespace", name)
+				return nil, nil, fmt.Errorf("source ref %q occupies GitHub's reserved namespace", name)
 			}
 			continue
 		}
 		if err := plumbing.ReferenceName(name).Validate(); err != nil || hash == plumbing.ZeroHash {
-			return nil, fmt.Errorf("invalid advertised ref %q", name)
+			return nil, nil, fmt.Errorf("invalid advertised ref %q", name)
 		}
 		refs[name] = hash
 	}
-	return refs, nil
+	return adv, refs, nil
 }
 
 func relayCommands(source, destination map[string]plumbing.Hash) []*packp.Command {
