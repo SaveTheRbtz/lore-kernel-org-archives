@@ -52,8 +52,7 @@ type relayTestServer struct {
 func newRelayTestServer(t *testing.T) *relayTestServer {
 	t.Helper()
 	s := &relayTestServer{t: t, source: memory.NewStorage(), destination: memory.NewStorage()}
-	s.server = httptest.NewServer(http.HandlerFunc(s.serveHTTP))
-	t.Cleanup(s.server.Close)
+	s.server = httptest.NewTestServer(t, http.HandlerFunc(s.serveHTTP))
 	return s
 }
 
@@ -61,8 +60,8 @@ func (s *relayTestServer) sync(t *testing.T, limit int64) (SyncResult, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	r := Relay{Client: s.server.Client(), AllowHTTP: true, MaxPushBytes: limit}
-	result, err := r.Sync(ctx, s.server.URL+"/source.git", s.server.URL+"/destination.git", "test-token")
+	r := Relay{Client: s.server.Client(), MaxPushBytes: limit}
+	result, err := r.Sync(ctx, "https://example.com/source.git", "https://example.com/destination.git", "test-token")
 	// Failed HTTP calls can return before their server handlers unwind.
 	s.sourceMu.Lock()
 	defer s.sourceMu.Unlock()
@@ -97,7 +96,7 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 			return nil
 		}
 	}
-	ep, err := transport.NewEndpoint(s.server.URL + base)
+	ep, err := transport.NewEndpoint("https://example.com" + base)
 	if err != nil {
 		return err
 	}
@@ -450,19 +449,20 @@ func TestRelayRequiresCompleteStatusAndReadBack(t *testing.T) {
 
 func TestRelayRejectsUnsafeEndpointsAndRedirects(t *testing.T) {
 	for _, endpoint := range []string{"file:///tmp/repo", "/tmp/repo", "git@example.org:repo", "http://example.org/repo", "https://user:secret@example.org/repo", "https://example.org/repo?x=1"} {
-		if _, err := relayEndpoint(endpoint, false); err == nil {
+		if _, err := relayEndpoint(endpoint); err == nil {
 			t.Errorf("accepted %q", endpoint)
 		}
 	}
 	var hit atomic.Bool
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit.Store(true) }))
-	defer target.Close()
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	origin := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == "target.example" {
+			hit.Store(true)
+			return
+		}
+		http.Redirect(w, r, "https://target.example/repo", http.StatusTemporaryRedirect)
 	}))
-	defer origin.Close()
 	client := (&Relay{Client: origin.Client()}).httpClient()
-	request, err := http.NewRequest(http.MethodGet, origin.URL, nil)
+	request, err := http.NewRequest(http.MethodGet, "https://origin.example/repo", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestReceivePackForwardsPrefixBeforeSourceTailExists(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	pack := relayEmptyPack()
-	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req := packp.NewReferenceUpdateRequest()
 		if err := req.Decode(r.Body); err != nil {
 			http.Error(w, err.Error(), 400)
@@ -512,7 +512,6 @@ func TestReceivePackForwardsPrefixBeforeSourceTailExists(t *testing.T) {
 			t.Error(err)
 		}
 	}))
-	defer receiver.Close()
 	packReader, packWriter := io.Pipe()
 	producerDone := make(chan struct{})
 	go func() {
@@ -530,7 +529,7 @@ func TestReceivePackForwardsPrefixBeforeSourceTailExists(t *testing.T) {
 			t.Error(closeErr)
 		}
 	}()
-	if _, err := relayReceivePack(ctx, receiver.Client(), receiver.URL, "test-token", testUpdate(t, packReader), 4096, nil, nil); err != nil {
+	if _, err := relayReceivePack(ctx, receiver.Client(), "https://example.com", "test-token", testUpdate(t, packReader), 4096, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	<-producerDone
@@ -554,16 +553,15 @@ func (p *blockedPack) Close() error { p.closeOnce.Do(func() { close(p.closed) })
 
 func TestReceivePackEarlyRejectionClosesBlockedSourceAndRedactsToken(t *testing.T) {
 	pack := newBlockedPack()
-	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-pack.started
 		w.Header().Set("Connection", "close")
 		http.Error(w, "rejected test-token", http.StatusForbidden)
 		w.(http.Flusher).Flush()
 	}))
-	defer receiver.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := relayReceivePack(ctx, receiver.Client(), receiver.URL, "test-token", testUpdate(t, pack), 4096, nil, nil)
+	_, err := relayReceivePack(ctx, receiver.Client(), "https://example.com", "test-token", testUpdate(t, pack), 4096, nil, nil)
 	if err == nil || strings.Contains(err.Error(), "test-token") || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -580,7 +578,7 @@ func TestReceivePackEarlyRejectionClosesBlockedSourceAndRedactsToken(t *testing.
 func TestReceivePackCancellationStopsBlockedTransfer(t *testing.T) {
 	pack := newBlockedPack()
 	headersReceived := make(chan struct{})
-	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		update := packp.NewReferenceUpdateRequest()
 		if err := update.Decode(r.Body); err != nil {
 			t.Error(err)
@@ -591,13 +589,12 @@ func TestReceivePackCancellationStopsBlockedTransfer(t *testing.T) {
 			return
 		}
 	}))
-	defer receiver.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	update := testUpdate(t, pack)
 	done := make(chan error, 1)
 	go func() {
-		_, err := relayReceivePack(ctx, receiver.Client(), receiver.URL, "test-token", update, 4096, nil, nil)
+		_, err := relayReceivePack(ctx, receiver.Client(), "https://example.com", "test-token", update, 4096, nil, nil)
 		done <- err
 	}()
 	defer func() { _ = pack.Close() }()

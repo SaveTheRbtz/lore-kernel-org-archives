@@ -33,7 +33,6 @@ var ErrPushTooLarge = errors.New("push exceeds configured byte limit")
 type Relay struct {
 	Client       *http.Client
 	MaxPushBytes int64
-	AllowHTTP    bool // Only for local protocol tests.
 	metrics      *observe.Telemetry
 	health       *observe.Health
 }
@@ -49,11 +48,11 @@ type SyncResult struct {
 // Source corrections and ref deletions are authoritative; GitHub's pull-request
 // refs are reserved and are never updated or deleted.
 func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token string) (result SyncResult, err error) {
-	source, err := relayEndpoint(sourceURL, r.AllowHTTP)
+	source, err := relayEndpoint(sourceURL)
 	if err != nil {
 		return result, fmt.Errorf("source: %w", err)
 	}
-	destination, err := relayEndpoint(destinationURL, r.AllowHTTP)
+	destination, err := relayEndpoint(destinationURL)
 	if err != nil {
 		return result, fmt.Errorf("destination: %w", err)
 	}
@@ -198,12 +197,12 @@ func (r *Relay) httpClient() *http.Client {
 	return &client
 }
 
-func relayEndpoint(raw string, allowHTTP bool) (*transport.Endpoint, error) {
+func relayEndpoint(raw string) (*transport.Endpoint, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, err
 	}
-	if u.Host == "" || (u.Scheme != "https" && (u.Scheme != "http" || !allowHTTP)) {
+	if u.Host == "" || u.Scheme != "https" {
 		return nil, errors.New("git endpoint must be an absolute HTTPS URL")
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
