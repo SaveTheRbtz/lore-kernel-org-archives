@@ -13,5 +13,4 @@ updates:
       interval: weekly
     groups:
       go-minor-and-patch:
-        patterns: ["*"]
         update-types: [minor, patch]
