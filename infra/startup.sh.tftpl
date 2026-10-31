@@ -2,11 +2,8 @@
 set -euo pipefail
 
 # COS supplies this credential helper; it gets tokens from the VM identity.
-registry_config=$(mktemp -d /run/lore-mirror-docker.XXXXXX)
-trap 'rm -rf "$registry_config"' EXIT
-printf '%s\n' '{"credHelpers":{"${registry}":"gcr"}}' > "$registry_config/config.json"
-systemctl start docker.service
-docker --config "$registry_config" pull '${image}'
+mkdir -p -m 0700 /run/lore-mirror-docker
+printf '%s\n' '{"credHelpers":{"${registry}":"gcr"}}' > /run/lore-mirror-docker/config.json
 
 cat > /etc/systemd/system/lore-mirror.service <<'EOF'
 [Unit]
@@ -17,7 +14,7 @@ StartLimitIntervalSec=0
 
 [Service]
 ExecStartPre=-/usr/bin/docker rm -f lore-mirror
-ExecStart=/usr/bin/docker run --rm --name=lore-mirror --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=2g --memory-swap=2g --pids-limit=128 --publish=8080:8080 --log-driver=gcplogs --env=GOOGLE_CLOUD_PROJECT=${project} --env=GITHUB_ORG=lore-kernel-org-archives --env=GITHUB_APP_SECRET=${github_app_secret} ${image} -lists=${lists}
+ExecStart=/usr/bin/docker --config /run/lore-mirror-docker run --rm --name=lore-mirror --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=2g --memory-swap=2g --pids-limit=128 --publish=8080:8080 --log-driver=gcplogs --env=GOOGLE_CLOUD_PROJECT=${project} --env=GITHUB_ORG=lore-kernel-org-archives --env=GITHUB_APP_SECRET=${github_app_secret} ${image} -lists=${lists}
 ExecStop=/usr/bin/docker stop -t 20 lore-mirror
 ExecStopPost=-/usr/bin/docker rm -f lore-mirror
 Restart=on-failure
