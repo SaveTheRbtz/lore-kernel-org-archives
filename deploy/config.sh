@@ -1,9 +1,9 @@
 project=kernelorg-mirror
 region=us-central1
 name=lore-mirror
-build_sa="lore-build@$project.iam.gserviceaccount.com"
+build_sa="projects/$project/serviceAccounts/lore-build@$project.iam.gserviceaccount.com"
 source_bucket="gs://$project-build-source"
-infra_sa="lore-infra@$project.iam.gserviceaccount.com"
+infra_sa="projects/$project/serviceAccounts/lore-infra@$project.iam.gserviceaccount.com"
 deployment="projects/$project/locations/$region/deployments/$name"
 
 gcloud() { command gcloud --project="$project" --quiet "$@"; }
@@ -16,6 +16,6 @@ lock_deployment() {
 
 apply_deployment() {
   gcloud infra-manager deployments apply "$deployment" \
-    --service-account="projects/$project/serviceAccounts/$infra_sa" \
+    --service-account="$infra_sa" \
     --tf-version-constraint='=1.5.7' --local-source=infra
 }
