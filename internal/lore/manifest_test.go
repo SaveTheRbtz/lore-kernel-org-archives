@@ -67,6 +67,7 @@ func TestInvalidInventoryNeverReturnsPartialManifest(t *testing.T) {
 		"null entry":         `{"/list":null}`,
 		"trailing":           `{"/list":` + valid + `} {}`,
 		"duplicate":          `{"/list":` + valid + `,"/list":` + valid + `}`,
+		"name collision":     `{"/list":` + valid + `,"/List":` + valid + `}`,
 		"duplicate field":    fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":1,"modified":2}}`, manifestTestFingerprint),
 		"missing digest":     `{"/list":{"modified":123}}`,
 		"bad digest length":  `{"/list":{"fingerprint":"0123456789abcdef","modified":123}}`,
@@ -164,15 +165,5 @@ func TestRepositoryName(t *testing.T) {
 		if got, err := RepositoryName(path); err == nil {
 			t.Errorf("RepositoryName(%q) accepted: %q", path, got)
 		}
-	}
-}
-
-func TestSourceRepositoryURL(t *testing.T) {
-	got, err := SourceRepositoryURL("/lkml/git/0.git")
-	if err != nil || got != "https://lore.kernel.org/lkml/git/0.git" {
-		t.Fatalf("unexpected URL: %q, %v", got, err)
-	}
-	if _, err := SourceRepositoryURL("//evil.example/list"); err == nil {
-		t.Error("accepted host-replacing repository path")
 	}
 }

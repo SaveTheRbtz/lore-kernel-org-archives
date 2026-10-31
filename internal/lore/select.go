@@ -1,58 +1,42 @@
 package lore
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 )
 
 func OrderedPaths(manifest Manifest) []string {
-	paths := make([]string, 0, len(manifest))
-	for path := range manifest {
-		paths = append(paths, path)
-	}
-	sort.Slice(paths, func(i, j int) bool {
-		if manifest[paths[i]].Modified != manifest[paths[j]].Modified {
-			return manifest[paths[i]].Modified > manifest[paths[j]].Modified
+	return slices.SortedFunc(maps.Keys(manifest), func(a, b string) int {
+		if order := cmp.Compare(manifest[b].Modified, manifest[a].Modified); order != 0 {
+			return order
 		}
-		return paths[i] < paths[j]
+		return cmp.Compare(a, b)
 	})
-	return paths
 }
 
-func SelectManifest(manifest Manifest, lists string) (Manifest, error) {
+// requireAll rejects misspelled inbox names on the initial discovery. Later
+// snapshots may remove inboxes while retaining the rest of the selection.
+func SelectManifest(manifest Manifest, lists string, requireAll bool) (Manifest, error) {
+	if lists == "" {
+		return manifest, nil
+	}
 	selected := map[string]bool{}
-	if lists != "" {
-		for _, list := range strings.Split(lists, ",") {
-			list = strings.TrimSpace(list)
-			if _, err := RepositoryName("/" + list); err != nil {
-				return nil, fmt.Errorf("invalid inbox %q: %w", list, err)
-			}
-			selected[list] = false
-		}
+	for _, list := range strings.Split(lists, ",") {
+		selected[strings.TrimSpace(list)] = false
 	}
 	result := Manifest{}
-	names := map[string]string{}
 	for path, entry := range manifest {
-		name, err := RepositoryName(path)
-		if err != nil {
-			return nil, err
-		}
-		if previous, exists := names[name]; exists {
-			return nil, fmt.Errorf("repository name collision: %q and %q map to %q", previous, path, name)
-		}
-		names[name] = path
 		list := strings.Split(strings.TrimPrefix(path, "/"), "/")[0]
-		if len(selected) > 0 {
-			if _, ok := selected[list]; !ok {
-				continue
-			}
+		if _, ok := selected[list]; ok {
 			selected[list] = true
+			result[path] = entry
 		}
-		result[path] = entry
 	}
 	for list, found := range selected {
-		if !found {
+		if requireAll && !found {
 			return nil, fmt.Errorf("selected inbox %q is absent from manifest", list)
 		}
 	}

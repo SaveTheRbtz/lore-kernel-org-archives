@@ -86,10 +86,16 @@ func decodeManifest(b []byte) (Manifest, error) {
 		return nil, fmt.Errorf("manifest is empty")
 	}
 	manifest := make(Manifest, len(raw))
+	names := make(map[string]string, len(raw))
 	for path, entry := range raw {
-		if _, err := RepositoryName(path); err != nil {
+		name, err := RepositoryName(path)
+		if err != nil {
 			return nil, fmt.Errorf("manifest repository: %w", err)
 		}
+		if previous, exists := names[name]; exists {
+			return nil, fmt.Errorf("repository name collision: %q and %q map to %q", previous, path, name)
+		}
+		names[name] = path
 		if entry.Fingerprint == nil || len(*entry.Fingerprint) != 40 {
 			return nil, fmt.Errorf("manifest entry %q has no valid fingerprint", path)
 		}
@@ -106,8 +112,7 @@ func decodeManifest(b []byte) (Manifest, error) {
 
 var sourcePathPattern = regexp.MustCompile(`^/([A-Za-z0-9][A-Za-z0-9._-]*)(?:/git/(0|[1-9][0-9]*)\.git)?$`)
 
-// RepositoryName reserves a deterministic GitHub namespace. GitHub names are
-// case-insensitive, so callers must reject collisions across the inventory.
+// RepositoryName reserves a deterministic, case-insensitive GitHub namespace.
 func RepositoryName(sourcePath string) (string, error) {
 	parts := sourcePathPattern.FindStringSubmatch(sourcePath)
 	if parts == nil {
@@ -122,11 +127,4 @@ func RepositoryName(sourcePath string) (string, error) {
 		return "", fmt.Errorf("source repository path %q produces a GitHub name longer than 100 bytes", sourcePath)
 	}
 	return name, nil
-}
-
-func SourceRepositoryURL(sourcePath string) (string, error) {
-	if _, err := RepositoryName(sourcePath); err != nil {
-		return "", err
-	}
-	return Origin + sourcePath, nil
 }

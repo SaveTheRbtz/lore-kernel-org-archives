@@ -29,6 +29,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	client := newHTTPClient()
+	selected := false
 	fetch := func(ctx context.Context) (lore.Manifest, error) {
 		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
@@ -36,7 +37,11 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		if err != nil {
 			return nil, err
 		}
-		return lore.SelectManifest(manifest, cfg.Lists)
+		manifest, err = lore.SelectManifest(manifest, cfg.Lists, !selected)
+		if err == nil {
+			selected = true
+		}
+		return manifest, err
 	}
 	if cfg.Discover {
 		manifest, err := fetch(ctx)
