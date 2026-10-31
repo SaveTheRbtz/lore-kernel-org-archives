@@ -9,9 +9,10 @@ terraform {
 }
 
 locals {
-  project = "kernelorg-mirror"
-  region  = "us-central1"
-  zone    = "${local.region}-a"
+  project           = "kernelorg-mirror"
+  region            = "us-central1"
+  zone              = "${local.region}-a"
+  github_app_secret = "${google_secret_manager_secret.github_app.id}/versions/latest"
 }
 
 provider "google" {
@@ -240,8 +241,11 @@ resource "google_compute_instance_template" "mirror" {
     "enable-oslogin"         = "TRUE"
     "block-project-ssh-keys" = "TRUE"
     "startup-script" = templatefile("${path.module}/startup.sh.tftpl", {
-      image = var.image
-      lists = var.lists
+      image             = var.image
+      lists             = var.lists
+      project           = local.project
+      registry          = "${local.region}-docker.pkg.dev"
+      github_app_secret = local.github_app_secret
     })
   }
   depends_on = [

@@ -3,5 +3,5 @@ output "instance_group" {
 }
 
 output "github_app_secret" {
-  value = "${google_secret_manager_secret.github_app.id}/versions/latest"
+  value = local.github_app_secret
 }
