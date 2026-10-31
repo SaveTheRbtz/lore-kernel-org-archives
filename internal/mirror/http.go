@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
 	"time"
@@ -22,7 +23,7 @@ func newHTTPClient() *http.Client {
 // Keep Git throttling separate from the GitHub SDK's own retry handling.
 func newGitHTTPClient(client *http.Client) *http.Client {
 	git := *client
-	git.Transport = gitTransport{client.Transport}
+	git.Transport = gitTransport{cmp.Or(client.Transport, http.DefaultTransport)}
 	return &git
 }
 

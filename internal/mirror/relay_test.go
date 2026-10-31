@@ -312,6 +312,14 @@ func TestRelaySidebandProgressKeepsSyncHealthy(t *testing.T) {
 	})
 }
 
+func TestGitHTTPClientUsesDefaultTransport(t *testing.T) {
+	base := &http.Client{}
+	git := newGitHTTPClient(base)
+	if got := git.Transport.(gitTransport).RoundTripper; got != http.DefaultTransport || base.Transport != nil {
+		t.Fatalf("wrapped transport %T, original transport %T", got, base.Transport)
+	}
+}
+
 func TestRelayRejectsUnsafeEndpointsAndRedirects(t *testing.T) {
 	for _, endpoint := range []string{"file:///tmp/repo", "/tmp/repo", "git@example.org:repo", "http://example.org/repo", "https://user:secret@example.org/repo", "https://example.org/repo?x=1"} {
 		if _, err := relayEndpoint(endpoint); err == nil {
