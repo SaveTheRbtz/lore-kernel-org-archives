@@ -255,8 +255,11 @@ func retryDelay(err error, failures int, retryAfter time.Duration) time.Duration
 }
 
 func serverRetryAfter(err error) time.Duration {
-	var throttled interface{ RetryAfter() time.Duration }
-	if errors.As(err, &throttled) {
+	type throttled interface {
+		error
+		RetryAfter() time.Duration
+	}
+	if throttled, ok := errors.AsType[throttled](err); ok {
 		return throttled.RetryAfter()
 	}
 	return 0
