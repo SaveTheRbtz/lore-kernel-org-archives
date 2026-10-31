@@ -60,6 +60,8 @@ type SyncResult struct {
 // currentDefault comes from GitHub. Sync calls setDefault once the replacement
 // branch exists and before deleting the old default.
 func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, currentDefault string, setDefault func(string) error) (result SyncResult, err error) {
+	// go-git can include the authenticated receiver's response body in errors.
+	defer func() { err = redactGitError(err, token) }()
 	source, err := relayEndpoint(sourceURL)
 	if err != nil {
 		return result, fmt.Errorf("source: %w", err)

@@ -27,13 +27,33 @@ type relayLimitedWriter struct {
 	health  *observe.Health
 }
 
-type receivePackError struct {
+// redactedGitError keeps the original cause for retry and cancellation checks.
+type redactedGitError struct {
 	message string
 	cause   error
 }
 
-func (e *receivePackError) Error() string { return e.message }
-func (e *receivePackError) Unwrap() error { return e.cause }
+func (e *redactedGitError) Error() string { return e.message }
+func (e *redactedGitError) Unwrap() error { return e.cause }
+
+func redactGitCredentials(message, token string) string {
+	if token == "" || message == "" {
+		return message
+	}
+	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return strings.NewReplacer(basic, "[redacted]", token, "[redacted]").Replace(message)
+}
+
+func redactGitError(err error, token string) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	if safe := redactGitCredentials(message, token); safe != message {
+		return &redactedGitError{message: safe, cause: err}
+	}
+	return err
+}
 
 func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 	remaining := w.limit - w.n
@@ -123,12 +143,9 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	if cause == nil {
 		return encoded.n, nil
 	}
-	message, detail := cause.Error(), strings.TrimSpace(remote.String())
-	if token != "" {
-		redact := strings.NewReplacer(token, "[redacted]", base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token)), "[redacted]")
-		message, detail = redact.Replace(message), redact.Replace(detail)
-	}
 	// Redact before truncating, including credentials split across sidebands.
+	message := redactGitCredentials(cause.Error(), token)
+	detail := redactGitCredentials(strings.TrimSpace(remote.String()), token)
 	if len(message) > 4096 {
 		message = message[:4096]
 	}
@@ -138,7 +155,7 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	if detail != "" {
 		message += "\nremote: " + detail
 	}
-	return encoded.n, &receivePackError{message: message, cause: cause}
+	return encoded.n, &redactedGitError{message: message, cause: cause}
 }
 
 func relayCheckReport(report *packp.ReportStatus, commands []*packp.Command) error {
