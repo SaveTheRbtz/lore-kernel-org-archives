@@ -12,7 +12,6 @@ func TestSelectManifestKeepsAutomaticallyMirroredEpochs(t *testing.T) {
 	manifest := Manifest{
 		"/cgroups/git/0.git": cgroups,
 		"/lkml/git/0.git":    oldEpoch,
-		"/lkml/git/1.git":    {Description: "manually maintained"},
 		"/lkml/git/2.git":    newEpoch,
 	}
 	for _, test := range []struct {
@@ -38,7 +37,7 @@ func TestSelectManifestRejectsUnknownInboxInitially(t *testing.T) {
 }
 
 func TestSelectManifestReconcilesRemovedInboxesAndNewEpochs(t *testing.T) {
-	manifest := Manifest{"/lkml/git/0.git": {}, "/lkml/git/1.git": {}, "/lkml/git/2.git": {}, "/other/git/0.git": {}}
+	manifest := Manifest{"/lkml/git/0.git": {}, "/lkml/git/2.git": {}, "/other/git/0.git": {}}
 	got, err := selectManifest(manifest, maps.Keys(manifest), "lkml,cgroups", false)
 	want := Manifest{"/lkml/git/0.git": {}, "/lkml/git/2.git": {}}
 	if err != nil || !maps.Equal(got, want) {

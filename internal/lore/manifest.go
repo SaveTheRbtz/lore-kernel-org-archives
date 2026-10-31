@@ -142,6 +142,9 @@ func decodeManifest(b []byte, log *slog.Logger, lists string, requireAll bool) (
 		entry.Epochs = epochs[list]
 		manifest[path] = entry
 	}
+	// lkml.1 is maintained manually because GitHub rejects the NUL in
+	// commit 299dbd50b6995c6debe2275f0df984ce697fb4cc.
+	delete(manifest, names["lkml.1"])
 	return selectManifest(manifest, maps.Keys(raw), lists, requireAll)
 }
 

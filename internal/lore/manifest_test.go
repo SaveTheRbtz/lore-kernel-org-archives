@@ -76,6 +76,23 @@ func TestFetchManifest(t *testing.T) {
 	}
 }
 
+func TestManualRepositoryIsReservedRegardlessOfSourceCase(t *testing.T) {
+	for _, list := range []string{"lkml", "LKML"} {
+		t.Run(list, func(t *testing.T) {
+			entry := fmt.Sprintf(`{"fingerprint":%q,"modified":0}`, manifestTestFingerprint)
+			input := fmt.Sprintf(`{"/%[1]s/git/1.git":%[2]s,"/%[1]s/git/2.git":%[2]s}`, list, entry)
+			got, err := fetchResponse(t, http.StatusOK, gzipManifest(t, input), slog.Default(), list)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := Manifest{"/" + list + "/git/2.git": {Fingerprint: manifestTestFingerprint, Epochs: 2}}
+			if !maps.Equal(got, want) {
+				t.Fatalf("manifest = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
 func TestInvalidInventoryNeverReturnsPartialManifest(t *testing.T) {
 	valid := fmt.Sprintf(`{"fingerprint":%q,"modified":123}`, manifestTestFingerprint)
 	tests := map[string]string{

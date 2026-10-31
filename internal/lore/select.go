@@ -40,9 +40,6 @@ func OrderedPaths(manifest Manifest) []string {
 // we skipped. Only supported epochs can appear in the result.
 func selectManifest(manifest Manifest, advertised iter.Seq[string], lists string, requireAll bool) (Manifest, error) {
 	result := maps.Clone(manifest)
-	// lkml.1 is maintained manually because GitHub rejects the NUL in
-	// commit 299dbd50b6995c6debe2275f0df984ce697fb4cc.
-	delete(result, "/lkml/git/1.git")
 	if lists == "" {
 		return result, nil
 	}
