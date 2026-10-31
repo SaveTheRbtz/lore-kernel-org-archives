@@ -3,7 +3,6 @@ package lore
 import (
 	"compress/gzip"
 	"context"
-	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
@@ -106,23 +105,20 @@ func manifestFromEntries(raw map[string]jsontext.Value, log *slog.Logger, lists 
 		}
 		names[name] = path
 		var entry struct {
-			Fingerprint *string `json:"fingerprint"`
-			Modified    *int64  `json:"modified"`
-			Description string  `json:"description"`
+			Fingerprint string `json:"fingerprint"`
+			Modified    *int64 `json:"modified"`
+			Description string `json:"description"`
 		}
 		if err := json.Unmarshal(data, &entry); err != nil {
 			return nil, fmt.Errorf("decode manifest entry %q: %w", path, err)
 		}
-		if entry.Fingerprint == nil || len(*entry.Fingerprint) != 40 {
-			return nil, fmt.Errorf("manifest entry %q has no valid fingerprint", path)
-		}
-		if _, err := hex.DecodeString(*entry.Fingerprint); err != nil {
+		if !fingerprintPattern.MatchString(entry.Fingerprint) {
 			return nil, fmt.Errorf("manifest entry %q has no valid fingerprint", path)
 		}
 		if entry.Modified == nil || *entry.Modified < 0 {
 			return nil, fmt.Errorf("manifest entry %q has no valid modified timestamp", path)
 		}
-		manifest[path] = ManifestEntry{Fingerprint: *entry.Fingerprint, Modified: *entry.Modified, Description: entry.Description}
+		manifest[path] = ManifestEntry{Fingerprint: entry.Fingerprint, Modified: *entry.Modified, Description: entry.Description}
 		list, _, _ := strings.Cut(path[1:], "/")
 		epochs[list]++
 	}
@@ -140,6 +136,7 @@ func manifestFromEntries(raw map[string]jsontext.Value, log *slog.Logger, lists 
 const listNamePattern = `[A-Za-z0-9][A-Za-z0-9._-]*`
 
 var (
+	fingerprintPattern   = regexp.MustCompile(`^[[:xdigit:]]{40}$`)
 	unshardedPathPattern = regexp.MustCompile(`^/` + listNamePattern + `$`)
 	sourcePathPattern    = regexp.MustCompile(`^/(` + listNamePattern + `)/git/(0|[1-9][0-9]*)\.git$`)
 )
