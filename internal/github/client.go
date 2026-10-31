@@ -12,6 +12,7 @@ import (
 	sdk "github.com/google/go-github/v88/github"
 
 	"lore-mirror/internal/lore"
+	"lore-mirror/internal/retryafter"
 )
 
 // Client provisions mirrors and shares installation-token refresh with Git pushes.
@@ -97,7 +98,7 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description s
 		})
 		if err != nil {
 			createErr := retryPolicy(err)
-			var limited *rateLimitError
+			var limited *retryafter.Error
 			if errors.As(createErr, &limited) {
 				return Repository{}, createErr
 			}
@@ -162,25 +163,8 @@ func validOrganization(name string) bool {
 	return true
 }
 
-// The SDK parses rate limits; this adapter exposes their delay to the scheduler.
-type rateLimitError struct {
-	error
-	after time.Duration
-}
-
-func (e *rateLimitError) Unwrap() error             { return e.error }
-func (e *rateLimitError) RetryAfter() time.Duration { return e.after }
-
-// WithRetryAfter exposes a bounded retry delay to the shared scheduler.
-func WithRetryAfter(err error, delay time.Duration) error {
-	if err == nil {
-		return nil
-	}
-	return &rateLimitError{error: err, after: max(0, min(delay, 24*time.Hour))}
-}
-
 func retryPolicy(err error) error {
-	var limited *rateLimitError
+	var limited *retryafter.Error
 	if errors.As(err, &limited) {
 		return err
 	}
@@ -193,17 +177,25 @@ func retryPolicy(err error) error {
 	}
 	var primary *sdk.RateLimitError
 	var secondary *sdk.AbuseRateLimitError
-	var delay time.Duration
+	var apiErr *sdk.ErrorResponse
 	switch {
 	case errors.As(err, &primary):
-		delay = time.Until(primary.Rate.Reset.Time)
+		delay := retryafter.Delay(primary.Response, time.Until(primary.Rate.Reset.Time))
+		return retryafter.Wrap(err, delay)
 	case errors.As(err, &secondary):
-		delay = time.Minute
-		if secondary.RetryAfter != nil && *secondary.RetryAfter > 0 {
+		var delay time.Duration
+		if secondary.RetryAfter != nil {
 			delay = *secondary.RetryAfter
 		}
-	default:
-		return err
+		delay = retryafter.Delay(secondary.Response, delay)
+		if delay <= 0 {
+			delay = time.Minute
+		}
+		return retryafter.Wrap(err, delay)
+	case errors.As(err, &apiErr):
+		if delay := retryafter.Delay(apiErr.Response, 0); delay > 0 {
+			return retryafter.Wrap(err, delay)
+		}
 	}
-	return WithRetryAfter(err, delay)
+	return err
 }

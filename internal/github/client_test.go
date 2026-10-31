@@ -290,14 +290,39 @@ func TestRepositoryOperationsPropagateRateLimits(t *testing.T) {
 	}
 }
 
+func TestCreateHonorsBareRetryAfter(t *testing.T) {
+	var requests atomic.Int32
+	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	_, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "", 0)
+	var limited interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &limited) || limited.RetryAfter() != 2*time.Minute {
+		t.Errorf("expected a two-minute scheduler cooldown, got %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Errorf("got %d requests, want only the lookup and creation attempt", got)
+	}
+}
+
 func TestRetryPolicyPreservesSDKRateLimits(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		response := &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header)}
+		response.Header.Set("Retry-After", time.Now().Add(30*time.Second).UTC().Format(http.TimeFormat))
 		for _, tc := range []struct {
 			name  string
 			err   error
 			delay time.Duration
 		}{
 			{"primary reset", &sdk.RateLimitError{Rate: sdk.Rate{Reset: sdk.Timestamp{Time: time.Now().Add(2 * time.Minute)}}}, 2 * time.Minute},
+			{"primary reset later than header", &sdk.RateLimitError{Response: response, Rate: sdk.Rate{Reset: sdk.Timestamp{Time: time.Now().Add(time.Minute)}}}, time.Minute},
+			{"secondary HTTP-date", &sdk.AbuseRateLimitError{Response: response}, 30 * time.Second},
 			{"secondary unspecified", &sdk.AbuseRateLimitError{}, time.Minute},
 			{"bounded", &sdk.AbuseRateLimitError{RetryAfter: sdk.Ptr(48 * time.Hour)}, 24 * time.Hour},
 		} {

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/format/config"
+
+	"lore-mirror/internal/retryafter"
 )
 
 // FetchAddress reads the primary posting address from an inbox's public config.
@@ -29,7 +31,11 @@ func FetchAddress(ctx context.Context, client *http.Client, sourcePath string) (
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch inbox config: HTTP %s", resp.Status)
+		err := fmt.Errorf("fetch inbox config: HTTP %s", resp.Status)
+		if delay := retryafter.Delay(resp, 0); delay > 0 {
+			err = retryafter.Wrap(err, delay)
+		}
+		return "", err
 	}
 	reader := &io.LimitedReader{R: resp.Body, N: (64 << 10) + 1}
 	parsed := config.New()

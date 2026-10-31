@@ -1,9 +1,11 @@
 package lore
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestFetchAddress(t *testing.T) {
@@ -50,5 +52,17 @@ func TestFetchAddress(t *testing.T) {
 				t.Fatalf("FetchAddress = %q, %v; want %q, error=%v", got, err, test.want, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestFetchAddressPreservesRetryAfter(t *testing.T) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	_, err := FetchAddress(t.Context(), server.Client(), "/lkml/git/0.git")
+	var limited interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &limited) || limited.RetryAfter() != 2*time.Minute {
+		t.Fatalf("FetchAddress error = %v; want 2-minute retry delay", err)
 	}
 }
