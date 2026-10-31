@@ -211,6 +211,29 @@ func TestEnsureRepositoryRevalidatesApprovedIdentity(t *testing.T) {
 	}
 }
 
+func TestRepositoryDescriptionLimitCountsRunes(t *testing.T) {
+	const source = "/git/git/0.git"
+	const prefix = "Mirror of https://lore.kernel.org" + source + ": "
+	summary := strings.Repeat("界", 400)
+	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		repo := testRepository("git.0", source)
+		if r.Method == http.MethodPatch {
+			var patch sdk.Repository
+			if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+				t.Error(err)
+			}
+			if got, want := patch.GetDescription(), prefix+strings.Repeat("界", 350-len(prefix)); got != want {
+				t.Errorf("limited description = %q, want %q", got, want)
+			}
+			repo.Description = patch.Description
+		}
+		_ = json.NewEncoder(w).Encode(repo)
+	})
+	if _, err := g.EnsureRepository(t.Context(), source, &summary, 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEnsureRepositoryRecoversLostCreationResponse(t *testing.T) {
 	var created atomic.Bool
 	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {

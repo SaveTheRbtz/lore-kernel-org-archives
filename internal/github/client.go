@@ -92,8 +92,8 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath string, summar
 	if summary != nil && *summary != "" {
 		desc += ": " + *summary
 	}
-	if runes := []rune(desc); len(runes) > 350 {
-		desc = string(runes[:350])
+	if len(desc) > 350 {
+		desc = fmt.Sprintf("%.350s", desc)
 	}
 	remote, response, err := g.api.Repositories.Get(ctx, g.org, name)
 	if err != nil {
