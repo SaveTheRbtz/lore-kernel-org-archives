@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,7 +150,7 @@ func TestFetchManifestBoundsValidPayloads(t *testing.T) {
 	// Incompressible text exceeds the wire limit while staying below the expanded
 	// limit. Both payloads are valid inventories if their bound is removed.
 	random := make([]byte, 9<<20)
-	_, _ = rand.New(rand.NewSource(1)).Read(random)
+	_, _ = rand.NewChaCha8([32]byte{}).Read(random)
 	for name, description := range map[string]string{
 		"compressed": base64.StdEncoding.EncodeToString(random),
 		"expanded":   strings.Repeat("x", 32<<20),
