@@ -145,6 +145,14 @@ type rateLimitError struct {
 func (e *rateLimitError) Unwrap() error             { return e.error }
 func (e *rateLimitError) RetryAfter() time.Duration { return e.after }
 
+// WithRetryAfter exposes a bounded retry delay to the shared scheduler.
+func WithRetryAfter(err error, delay time.Duration) error {
+	if err == nil {
+		return nil
+	}
+	return &rateLimitError{error: err, after: max(0, min(delay, 24*time.Hour))}
+}
+
 func retryPolicy(err error) error {
 	var limited *rateLimitError
 	if errors.As(err, &limited) {
@@ -171,5 +179,5 @@ func retryPolicy(err error) error {
 	default:
 		return err
 	}
-	return &rateLimitError{error: err, after: max(0, min(delay, 24*time.Hour))}
+	return WithRetryAfter(err, delay)
 }

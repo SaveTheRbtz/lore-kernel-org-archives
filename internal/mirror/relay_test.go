@@ -11,7 +11,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"lore-mirror/internal/observe"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
@@ -44,6 +47,7 @@ type relayTestServer struct {
 	pushes      int
 	haves       []plumbing.Hash
 	beforePush  func()
+	beforePack  func(http.ResponseWriter) error
 	failSource  bool
 	omitStatus  bool
 	skipUpdate  bool
@@ -170,6 +174,11 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 			mux := sideband.NewMuxer(sideband.Sideband64k, w)
 			if _, err := mux.WriteChannel(sideband.ProgressMessage, []byte("generating pack\n")); err != nil {
 				return err
+			}
+			if s.beforePack != nil {
+				if err := s.beforePack(w); err != nil {
+					return err
+				}
 			}
 			if s.failSource {
 				_, err = mux.WriteChannel(sideband.ErrorMessage, []byte("injected source failure"))
@@ -447,6 +456,58 @@ func TestRelayRequiresCompleteStatusAndReadBack(t *testing.T) {
 	}
 }
 
+func TestRelaySidebandProgressKeepsSyncHealthy(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		s := newRelayTestServer(t)
+		hash := relayTestCommit(t, s.source, "mail")
+		relayTestSetRef(t, s.source, "refs/heads/master", hash)
+		progress := make(chan struct{}, 6)
+		s.beforePack = func(w http.ResponseWriter) error {
+			mux := sideband.NewMuxer(sideband.Sideband64k, w)
+			for range 6 {
+				time.Sleep(time.Minute)
+				if _, err := mux.WriteChannel(sideband.ProgressMessage, []byte("preparing pack\n")); err != nil {
+					return err
+				}
+				w.(http.Flusher).Flush()
+				progress <- struct{}{}
+			}
+			<-ctx.Done() // No archive bytes are sent during this preparation.
+			return ctx.Err()
+		}
+		health := &observe.Health{}
+		finish := health.Begin("sync")
+		defer finish()
+		r := Relay{Client: s.server.Client(), health: health}
+		done := make(chan error, 1)
+		go func() {
+			_, err := r.Sync(ctx, "https://example.com/source.git", "https://example.com/destination.git", "test-token")
+			done <- err
+		}()
+		for range 6 {
+			select {
+			case <-progress:
+			case err := <-done:
+				t.Fatalf("sync ended during preparation: %v", err)
+			}
+			synctest.Wait()
+			if health.Stuck() {
+				t.Fatal("sync marked stuck while receiving source progress")
+			}
+		}
+		time.Sleep(5 * time.Minute)
+		if !health.Stuck() {
+			t.Error("sync stayed healthy after source progress stopped")
+		}
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel stalled preparation: %v", err)
+		}
+	})
+}
+
 func TestRelayRejectsUnsafeEndpointsAndRedirects(t *testing.T) {
 	for _, endpoint := range []string{"file:///tmp/repo", "/tmp/repo", "git@example.org:repo", "http://example.org/repo", "https://user:secret@example.org/repo", "https://example.org/repo?x=1"} {
 		if _, err := relayEndpoint(endpoint); err == nil {
@@ -573,6 +634,33 @@ func TestReceivePackEarlyRejectionClosesBlockedSourceAndRedactsToken(t *testing.
 	default:
 		t.Fatal("source was not closed")
 	}
+}
+
+func TestReceivePackPreservesRetryAfter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		for _, tc := range []struct {
+			status int
+			header string
+			delay  time.Duration
+		}{
+			{429, "180", 3 * time.Minute},
+			{429, time.Now().Add(3 * time.Minute).UTC().Format(http.TimeFormat), 3 * time.Minute},
+			{429, "", time.Minute},
+			{429, "invalid", time.Minute},
+			{503, "180", 3 * time.Minute},
+			{403, "", 0},
+		} {
+			receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Retry-After", tc.header)
+				http.Error(w, "rejected", tc.status)
+			}))
+			pack := io.NopCloser(bytes.NewReader(relayEmptyPack()))
+			_, err := relayReceivePack(t.Context(), receiver.Client(), "https://example.com", "test-token", testUpdate(t, pack), 4096, nil, nil)
+			if delay := serverRetryAfter(err); delay != tc.delay {
+				t.Errorf("HTTP %d Retry-After %q: scheduler delay=%s, want %s; error=%v", tc.status, tc.header, delay, tc.delay, err)
+			}
+		}
+	})
 }
 
 func TestReceivePackCancellationStopsBlockedTransfer(t *testing.T) {

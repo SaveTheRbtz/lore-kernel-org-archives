@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
@@ -21,6 +23,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 
+	gh "lore-mirror/internal/github"
 	"lore-mirror/internal/observe"
 )
 
@@ -152,7 +155,9 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 		defer func() { _ = response.Close() }()
 		var pack io.Reader = response
 		if fetch.Capabilities.Supports(capability.Sideband64k) {
-			pack = sideband.NewDemuxer(sideband.Sideband64k, response)
+			demux := sideband.NewDemuxer(sideband.Sideband64k, response)
+			demux.Progress = relayProgress{r.health}
+			pack = demux
 		}
 		update.Packfile = &relayCountingReader{Reader: pack, Closer: response, metrics: r.metrics, health: r.health}
 	} else if needsPack {
@@ -278,6 +283,13 @@ type relayCountingReader struct {
 	health  *observe.Health
 }
 
+type relayProgress struct{ health *observe.Health }
+
+func (p relayProgress) Write(b []byte) (int, error) {
+	p.health.Progress("sync")
+	return len(b), nil
+}
+
 func (r *relayCountingReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
 	r.metrics.AddBytes("receive", int64(n))
@@ -360,6 +372,9 @@ func relayReceivePack(ctx context.Context, client *http.Client, destination, tok
 				text = strings.ReplaceAll(text, token, "[redacted]")
 			}
 			receiveErr = fmt.Errorf("receive-pack HTTP %d: %s", response.StatusCode, text)
+			if delay := receiveRetryAfter(response); delay > 0 {
+				receiveErr = gh.WithRetryAfter(receiveErr, delay)
+			}
 		} else if contentType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type")); contentType != "application/x-git-receive-pack-result" {
 			receiveErr = fmt.Errorf("unexpected receive-pack content type %q", contentType)
 		} else {
@@ -381,6 +396,20 @@ func relayReceivePack(ctx context.Context, client *http.Client, destination, tok
 	}
 	encoded := <-done
 	return encoded.n, errors.Join(receiveErr, encoded.err)
+}
+
+func receiveRetryAfter(response *http.Response) time.Duration {
+	value := response.Header.Get("Retry-After")
+	var delay time.Duration
+	if seconds, err := strconv.ParseUint(value, 10, 32); err == nil {
+		delay = time.Duration(seconds) * time.Second
+	} else if until, err := http.ParseTime(value); err == nil {
+		delay = time.Until(until)
+	}
+	if response.StatusCode == http.StatusTooManyRequests && delay <= 0 {
+		delay = time.Minute
+	}
+	return delay
 }
 
 func relayCheckReport(report *packp.ReportStatus, commands []*packp.Command) error {
