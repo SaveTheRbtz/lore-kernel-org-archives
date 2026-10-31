@@ -97,6 +97,55 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	}
 }
 
+func TestRelayStagesDefaultBranchRename(t *testing.T) {
+	s := newRelayTestServer(t)
+	old := relayTestCommit(t, s.destination, "old")
+	relayTestSetRef(t, s.destination, "refs/heads/master", old)
+	relayTestSetRef(t, s.destination, "refs/tags/obsolete", old)
+	tip := relayTestCommit(t, s.source, "new", relayTestCommit(t, s.source, "old"))
+	relayTestSetRef(t, s.source, string(plumbing.Main), tip)
+	if err := s.source.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.Main)); err != nil {
+		t.Fatal(err)
+	}
+
+	switchFailed := errors.New("default branch change failed")
+	switches := 0
+	s.setDefault = func(branch string) error {
+		switches++
+		if branch != "main" {
+			t.Fatalf("switch to %q, want main", branch)
+		}
+		// GitHub can select the new branch now, and no deletions have happened.
+		for ref, want := range map[plumbing.ReferenceName]plumbing.Hash{plumbing.Main: tip, plumbing.Master: old, "refs/tags/obsolete": old} {
+			if got, err := s.destination.Reference(ref); err != nil || got.Hash() != want {
+				t.Fatalf("before switch: %s = %v, %v; want %s", ref, got, err, want)
+			}
+		}
+		if switches == 1 {
+			return switchFailed
+		}
+		return nil
+	}
+	staged, err := s.sync(t, 0)
+	if !errors.Is(err, switchFailed) || !staged.Changed || staged.Bytes == 0 {
+		t.Fatalf("first sync = %+v, %v; want staged push and default branch change failure", staged, err)
+	}
+	if _, err := s.sync(t, 0); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if switches != 2 || s.pushes != 2 || s.uploads != 1 {
+		t.Fatalf("got %d switches, %d pushes, %d uploads; want two switch attempts, one staging push and one cleanup push", switches, s.pushes, s.uploads)
+	}
+	for _, ref := range []plumbing.ReferenceName{plumbing.Master, "refs/tags/obsolete"} {
+		if _, err := s.destination.Reference(ref); err != plumbing.ErrReferenceNotFound {
+			t.Fatalf("after switch: %s lookup = %v, want absent", ref, err)
+		}
+	}
+	if got, err := s.destination.Reference(plumbing.Main); err != nil || got.Hash() != tip {
+		t.Fatalf("after switch: main = %v, %v; want %s", got, err, tip)
+	}
+}
+
 func TestRelayLimitsWholeRequestsAndRetriesWithoutPublishingPartialRefs(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -242,7 +291,7 @@ func TestRelaySidebandProgressKeepsSyncHealthy(t *testing.T) {
 		r := Relay{Client: s.client, MaxPushBytes: DefaultMaxPushBytes, health: health}
 		var syncErr error
 		go func() {
-			_, syncErr = r.Sync(ctx, "https://example.com/source.git", "https://example.com/destination.git", "test-token")
+			_, syncErr = r.Sync(ctx, "https://example.com/source.git", "https://example.com/destination.git", "test-token", "master", s.setDefault)
 		}()
 		synctest.Wait()
 		time.Sleep(6 * time.Minute)

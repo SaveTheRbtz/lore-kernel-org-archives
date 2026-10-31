@@ -42,6 +42,7 @@ type relayTestServer struct {
 	beforePush  func()
 	beforePack  func(http.ResponseWriter) error
 	beforeHTTP  func(http.ResponseWriter, *http.Request) bool
+	setDefault  func(string) error
 	failSource  bool
 	receiveBand bool
 	omitStatus  bool
@@ -51,6 +52,7 @@ type relayTestServer struct {
 func newRelayTestServer(t *testing.T) *relayTestServer {
 	t.Helper()
 	s := &relayTestServer{t: t, source: memory.NewStorage(), destination: memory.NewStorage()}
+	s.setDefault = func(branch string) error { return errors.New("unexpected default branch switch to " + branch) }
 	s.client = relayTestClient(httptest.NewTestServer(t, http.HandlerFunc(s.serveHTTP)))
 	return s
 }
@@ -63,7 +65,7 @@ func (s *relayTestServer) sync(t *testing.T, limit int64) (SyncResult, error) {
 		limit = DefaultMaxPushBytes
 	}
 	r := Relay{Client: s.client, MaxPushBytes: limit}
-	result, err := r.Sync(ctx, "https://example.com/source.git", "https://example.com/destination.git", "test-token")
+	result, err := r.Sync(ctx, "https://example.com/source.git", "https://example.com/destination.git", "test-token", "master", s.setDefault)
 	// Failed HTTP calls can return before their server handlers unwind.
 	s.sourceMu.Lock()
 	defer s.sourceMu.Unlock()

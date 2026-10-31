@@ -85,9 +85,11 @@ gcloud logging read 'resource.type="gce_instance_group_manager"
 
 Discovery and successful repository rechecks use the same `-recheck` interval (default one hour), plus jitter. Each new archive gets an independent initial delay between zero and that interval. One worker chooses randomly among ready archives and retries failures with backoff; `-once` also uses a shuffled order. Discovering new mail makes an archive due immediately while preserving failure backoff. Restarting is safe: each sync compares against GitHub's current refs and verifies the result after pushing.
 
+When Lore renames its default branch, the mirror publishes the replacement branch, sets it as the GitHub default, then removes the old branch if Lore deleted it.
+
 ## Limits
 
-Pushes are limited to 1.75 GiB. The service retries oversized pushes after 24 hours. GitHub also rejects blobs larger than 100 MiB. If an upstream default-branch rename requires deleting GitHub's current default branch, change the repository's default branch before retrying.
+Pushes are limited to 1.75 GiB. The service retries oversized pushes after 24 hours. GitHub also rejects blobs larger than 100 MiB.
 
 ## Development
 

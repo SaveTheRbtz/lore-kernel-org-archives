@@ -79,34 +79,29 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	}
 	relay := &Relay{Client: newGitHTTPClient(client), MaxPushBytes: cfg.MaxPushBytes, metrics: metrics, health: health}
 	// The single worker retains approved IDs even when a sync fails.
-	repositories := map[string]gh.Repository{}
+	repositoryIDs := map[string]int64{}
 	syncRepo := func(ctx context.Context, sourcePath string, entry lore.ManifestEntry) error {
 		started := time.Now()
 		address, err := lore.FetchAddress(ctx, client, sourcePath)
 		if err != nil {
 			return err
 		}
-		repo, err := github.EnsureRepository(ctx, sourcePath, entry.Summary(sourcePath, address), repositories[sourcePath].ID)
+		repo, err := github.EnsureRepository(ctx, sourcePath, entry.Summary(sourcePath, address), repositoryIDs[sourcePath])
 		if err != nil {
 			return err
 		}
-		repositories[sourcePath] = repo
+		repositoryIDs[sourcePath] = repo.ID
 		health.Progress("sync")
 		credential, err := github.Token(ctx)
 		if err != nil {
 			return err
 		}
 		health.Progress("sync")
-		result, err := relay.Sync(ctx, lore.Origin+sourcePath, repo.GitURL, credential)
+		result, err := relay.Sync(ctx, lore.Origin+sourcePath, repo.GitURL, credential, repo.DefaultBranch, func(branch string) error {
+			return github.SetDefaultBranch(ctx, repo.Name, branch)
+		})
 		if err != nil {
 			return fmt.Errorf("sync attempt failed after %s, request_bytes=%d: %w", time.Since(started).Round(time.Millisecond), result.Bytes, err)
-		}
-		if result.DefaultBranch != "" && repo.DefaultBranch != result.DefaultBranch {
-			if err := github.SetDefaultBranch(ctx, repo.Name, result.DefaultBranch); err != nil {
-				return err
-			}
-			repo.DefaultBranch = result.DefaultBranch
-			repositories[sourcePath] = repo
 		}
 		log.Info("synced", "source", sourcePath, "repository", repo.Name, "duration", time.Since(started).String(),
 			"changed", result.Changed, "refs", len(result.SourceRefs), "bytes", result.Bytes)
