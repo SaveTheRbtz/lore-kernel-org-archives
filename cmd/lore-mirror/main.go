@@ -34,7 +34,7 @@ func run(log *slog.Logger) error {
 	flag.Int64Var(&cfg.MaxPushBytes, "max-push-bytes", mirror.DefaultMaxPushBytes, "maximum receive-pack request bytes, below GitHub's 2 GiB limit")
 	flag.Parse()
 	if flag.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments: %v", flag.Args())
+		return fmt.Errorf("unexpected positional arguments: %q", flag.Args())
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
