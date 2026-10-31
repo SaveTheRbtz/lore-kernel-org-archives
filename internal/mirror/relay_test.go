@@ -32,7 +32,7 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	if err := s.source.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.Master)); err != nil {
 		t.Fatal(err)
 	}
-	result, err := s.sync(t, 0)
+	result, err := s.sync(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,13 +48,13 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 		t.Fatalf("destination lacks commit: %v", err)
 	}
 	s.pushes, s.uploads = 0, 0
-	result, err = s.sync(t, 0)
+	result, err = s.sync(0)
 	if err != nil || result.Changed || s.pushes != 0 || s.uploads != 0 {
 		t.Fatalf("unchanged sync did work: %+v %v pushes=%d uploads=%d", result, err, s.pushes, s.uploads)
 	}
 	second := relayTestCommit(t, s.source, "second mail", first)
 	relayTestSetRef(t, s.source, "refs/heads/master", second)
-	if _, err := s.sync(t, 0); err != nil {
+	if _, err := s.sync(0); err != nil {
 		t.Fatal(err)
 	}
 	if ref, err := s.destination.Reference(plumbing.Master); err != nil || ref.Hash() != second {
@@ -65,7 +65,7 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	}
 	s.uploads = 0
 	relayTestSetRef(t, s.source, "refs/tags/existing", second)
-	if _, err := s.sync(t, 0); err != nil {
+	if _, err := s.sync(0); err != nil {
 		t.Fatal(err)
 	}
 	if ref, err := s.destination.Reference("refs/tags/existing"); err != nil || ref.Hash() != second {
@@ -76,7 +76,7 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	relayTestSetRef(t, s.destination, "refs/pull/1/head", first)
-	if _, err := s.sync(t, 0); err != nil {
+	if _, err := s.sync(0); err != nil {
 		t.Fatalf("delete-only sync: %v", err)
 	}
 	if _, err := s.destination.Reference("refs/meta/origins"); err != plumbing.ErrReferenceNotFound {
@@ -87,7 +87,7 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	}
 	// Rewinds are authoritative and can reuse objects already at the target.
 	relayTestSetRef(t, s.source, "refs/heads/master", first)
-	if _, err := s.sync(t, 0); err != nil {
+	if _, err := s.sync(0); err != nil {
 		t.Fatalf("source correction: %v", err)
 	}
 	if ref, err := s.destination.Reference(plumbing.Master); err != nil || ref.Hash() != first {
@@ -127,11 +127,11 @@ func TestRelayStagesDefaultBranchRename(t *testing.T) {
 		}
 		return nil
 	}
-	staged, err := s.sync(t, 0)
+	staged, err := s.sync(0)
 	if !errors.Is(err, switchFailed) || !staged.Changed || staged.Bytes == 0 {
 		t.Fatalf("first sync = %+v, %v; want staged push and default branch change failure", staged, err)
 	}
-	if _, err := s.sync(t, 0); err != nil {
+	if _, err := s.sync(0); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if switches != 2 || s.pushes != 2 || s.uploads != 1 {
@@ -162,19 +162,19 @@ func TestRelayLimitsWholeRequestsAndRetriesWithoutPublishingPartialRefs(t *testi
 			hash := relayTestCommit(t, s.source, "mail")
 			relayTestSetRef(t, s.source, "refs/heads/master", hash)
 			if tc.initialSync {
-				if _, err := s.sync(t, 0); err != nil {
+				if _, err := s.sync(0); err != nil {
 					t.Fatal(err)
 				}
 			}
 			relayTestSetRef(t, s.source, string(tc.ref), hash)
-			failed, err := s.sync(t, tc.limit)
+			failed, err := s.sync(tc.limit)
 			if !errors.Is(err, ErrPushTooLarge) || failed.Bytes > tc.limit {
 				t.Fatalf("bounded request: %+v %v", failed, err)
 			}
 			if _, err := s.destination.Reference(tc.ref); !errors.Is(err, plumbing.ErrReferenceNotFound) {
 				t.Fatalf("partial request published %s: %v", tc.ref, err)
 			}
-			if _, err := s.sync(t, 0); err != nil {
+			if _, err := s.sync(0); err != nil {
 				t.Fatalf("retry: %v", err)
 			}
 			ref, err := s.destination.Reference(tc.ref)
@@ -191,7 +191,7 @@ func TestRelaySourceFailureAndConcurrentDestinationChange(t *testing.T) {
 		hash := relayTestCommit(t, s.source, "mail")
 		relayTestSetRef(t, s.source, "refs/heads/master", hash)
 		s.failSource = true
-		_, err := s.sync(t, 0)
+		_, err := s.sync(0)
 		if err == nil || !strings.Contains(err.Error(), "injected source failure") {
 			t.Fatalf("source error lost: %v", err)
 		}
@@ -205,7 +205,7 @@ func TestRelaySourceFailureAndConcurrentDestinationChange(t *testing.T) {
 		relayTestSetRef(t, s.source, "refs/heads/master", hash)
 		other := relayTestCommit(t, s.destination, "concurrent change")
 		s.beforePush = func() { relayTestSetRef(t, s.destination, "refs/heads/master", other) }
-		if _, err := s.sync(t, 0); err == nil || !strings.Contains(err.Error(), "stale old object") {
+		if _, err := s.sync(0); err == nil || !strings.Contains(err.Error(), "stale old object") {
 			t.Fatalf("concurrent update not rejected: %v", err)
 		}
 		ref, err := s.destination.Reference(plumbing.Master)
@@ -231,7 +231,7 @@ func TestRelayRequiresCompleteStatusAndReadBack(t *testing.T) {
 			s.omitStatus = tc.omitStatus
 			s.skipUpdate = tc.skipUpdate
 			s.shallowAfterPush = tc.shallowAfterPush
-			if _, err := s.sync(t, 0); err == nil {
+			if _, err := s.sync(0); err == nil {
 				t.Fatal("invalid receiver success accepted")
 			}
 		})
@@ -258,7 +258,7 @@ func TestRelayPreservesThrottlingThroughGoGit(t *testing.T) {
 				http.Error(w, "throttled test-token", tc.status)
 				return true
 			}
-			_, err := s.sync(t, 0)
+			_, err := s.sync(0)
 			if delay := retryafter.FromError(err); delay != 42*time.Second {
 				t.Fatalf("scheduler delay = %s, want 42s; error=%v", delay, err)
 			}

@@ -158,7 +158,7 @@ func TestEnsureRepositoryRefusesUnsafeAdoption(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(remote)
 			})
-			if _, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", nil, 0); err == nil {
+			if _, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", nil, 0); err == nil {
 				t.Fatal("unsafe repository adopted")
 			}
 		})

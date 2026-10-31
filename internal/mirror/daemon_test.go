@@ -24,7 +24,7 @@ func startDaemon(t *testing.T, d *daemon) context.CancelFunc {
 	if d.queue == nil {
 		d.queue = func(int64) {}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- d.run(ctx) }()
 	t.Cleanup(func() {
@@ -290,7 +290,7 @@ func TestRunOnceContinuesPastFailure(t *testing.T) {
 		},
 		log: testLogger(), queue: func(int64) {}, timeout: time.Minute,
 	}
-	if err := d.runOnce(context.Background()); err == nil {
+	if err := d.runOnce(t.Context()); err == nil {
 		t.Fatal("failed sync was not reported")
 	}
 	slices.Sort(attempted)

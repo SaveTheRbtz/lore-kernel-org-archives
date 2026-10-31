@@ -58,9 +58,8 @@ func newRelayTestServer(t *testing.T) *relayTestServer {
 	return s
 }
 
-func (s *relayTestServer) sync(t *testing.T, limit int64) (SyncResult, error) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *relayTestServer) sync(limit int64) (SyncResult, error) {
+	ctx, cancel := context.WithTimeout(s.t.Context(), 5*time.Second)
 	defer cancel()
 	if limit == 0 {
 		limit = DefaultMaxPushBytes
