@@ -18,6 +18,8 @@ import (
 	"lore-mirror/internal/observe"
 )
 
+const maxDiagnosticBytes = 4096
+
 type relayLimitedWriter struct {
 	w       io.Writer
 	limit   int64
@@ -120,12 +122,8 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	// Redact before truncating, including credentials split across sidebands.
 	message := redactGitCredentials(cause.Error(), token)
 	detail := redactGitCredentials(strings.TrimSpace(remote.String()), token)
-	if len(message) > 4096 {
-		message = message[:4096]
-	}
-	if len(detail) > 4096 {
-		detail = detail[len(detail)-4096:]
-	}
+	message = message[:min(len(message), maxDiagnosticBytes)]
+	detail = detail[max(0, len(detail)-maxDiagnosticBytes):]
 	if detail != "" {
 		message += "\nremote: " + detail
 	}
@@ -135,8 +133,8 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 func (r *Relay) readReceivePackResponse(response *http.Response, update *packp.ReferenceUpdateRequest, remote io.Writer) error {
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		message, readErr := io.ReadAll(io.LimitReader(response.Body, 4097))
-		if readErr != nil || len(message) > 4096 {
+		message, readErr := io.ReadAll(io.LimitReader(response.Body, maxDiagnosticBytes+1))
+		if readErr != nil || len(message) > maxDiagnosticBytes {
 			// A partial credential cannot be matched by the redactor.
 			message = []byte("[body omitted]")
 		}
