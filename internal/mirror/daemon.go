@@ -61,7 +61,6 @@ func (d *daemon) pollManifests(ctx context.Context, updates chan lore.Manifest) 
 
 func (d *daemon) run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	updates := make(chan lore.Manifest, 1)
 	pollerDone := make(chan struct{})
 	go func() { defer close(pollerDone); d.pollManifests(ctx, updates) }()

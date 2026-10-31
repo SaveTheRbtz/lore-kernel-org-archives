@@ -71,7 +71,7 @@ func StartTelemetry(ctx context.Context, project string, health *Health) (*Telem
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter,
 			sdkmetric.WithInterval(time.Minute), sdkmetric.WithTimeout(10*time.Second))),
 	)
-	t, err := NewTelemetry(provider.Meter("lore-mirror"), health)
+	t, err := newTelemetry(provider.Meter("lore-mirror"), health)
 	if err != nil {
 		_ = provider.Shutdown(ctx)
 		return nil, nil, err
@@ -80,7 +80,7 @@ func StartTelemetry(ctx context.Context, project string, health *Health) (*Telem
 	return t, provider.Shutdown, nil
 }
 
-func NewTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
+func newTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
 	t := &Telemetry{}
 	operations, e1 := meter.Int64Counter("lore_mirror_operations",
 		metric.WithDescription("Completed operations by outcome"), metric.WithUnit("{operation}"))
@@ -171,7 +171,7 @@ func (t *Telemetry) Busy(active bool) {
 	}
 }
 
-func (t *Telemetry) AddBytes(_ context.Context, direction string, n int64) {
+func (t *Telemetry) AddBytes(direction string, n int64) {
 	if t == nil || n <= 0 {
 		return
 	}

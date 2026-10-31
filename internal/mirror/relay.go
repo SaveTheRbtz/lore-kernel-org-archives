@@ -154,8 +154,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 		if fetch.Capabilities.Supports(capability.Sideband64k) {
 			pack = sideband.NewDemuxer(sideband.Sideband64k, response)
 		}
-		pack = &relayCountingReader{Reader: pack, ctx: ctx, metrics: r.metrics, health: r.health}
-		update.Packfile = &relayReadCloser{Reader: pack, Closer: response}
+		update.Packfile = &relayCountingReader{Reader: pack, Closer: response, metrics: r.metrics, health: r.health}
 	} else if needsPack {
 		// Receive-pack requires a valid pack even when all objects already exist.
 		update.Packfile = io.NopCloser(bytes.NewReader(relayEmptyPack()))
@@ -280,21 +279,16 @@ func relayDefaultBranch(adv *packp.AdvRefs, refs map[string]plumbing.Hash) strin
 	return ""
 }
 
-type relayReadCloser struct {
-	io.Reader
-	io.Closer
-}
-
 type relayCountingReader struct {
 	io.Reader
-	ctx     context.Context
+	io.Closer
 	metrics *observe.Telemetry
 	health  *observe.Health
 }
 
 func (r *relayCountingReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
-	r.metrics.AddBytes(r.ctx, "receive", int64(n))
+	r.metrics.AddBytes("receive", int64(n))
 	if n > 0 {
 		r.health.Progress("sync")
 	}
@@ -311,7 +305,6 @@ type relayLimitedWriter struct {
 	w       io.Writer
 	limit   int64
 	n       int64
-	ctx     context.Context
 	metrics *observe.Telemetry
 	health  *observe.Health
 }
@@ -327,7 +320,7 @@ func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 	}
 	n, err := w.w.Write(p)
 	w.n += int64(n)
-	w.metrics.AddBytes(w.ctx, "send", int64(n))
+	w.metrics.AddBytes("send", int64(n))
 	if n > 0 {
 		w.health.Progress("sync")
 	}
@@ -361,7 +354,7 @@ func relayReceivePack(ctx context.Context, client *http.Client, destination, tok
 	}
 	done := make(chan encodedResult, 1)
 	go func() {
-		limited := &relayLimitedWriter{w: writer, limit: limit, ctx: ctx, metrics: metrics, health: health}
+		limited := &relayLimitedWriter{w: writer, limit: limit, metrics: metrics, health: health}
 		err := update.Encode(limited)
 		writer.CloseWithError(err)
 		done <- encodedResult{limited.n, err}
