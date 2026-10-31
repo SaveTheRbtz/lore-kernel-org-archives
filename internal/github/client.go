@@ -1,6 +1,7 @@
 package github
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -42,10 +43,7 @@ func New(ctx context.Context, client *http.Client, org string) (*Client, error) 
 	if err != nil {
 		return nil, err
 	}
-	transport := client.Transport
-	if transport == nil {
-		transport = http.DefaultTransport
-	}
+	transport := cmp.Or(client.Transport, http.DefaultTransport)
 	installation, err := ghinstallation.New(transport, secret.AppID, secret.InstallationID, []byte(secret.PrivateKey))
 	if err != nil {
 		return nil, fmt.Errorf("GitHub App credentials: %w", err)
