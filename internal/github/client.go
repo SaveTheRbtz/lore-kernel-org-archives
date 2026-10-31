@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 )
 
 const mirrorDescriptionPrefix = "Mirror of "
+
+var organizationPattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 
 // Client provisions mirrors and shares installation-token refresh with Git pushes.
 type Client struct {
@@ -32,7 +35,7 @@ type Repository struct {
 }
 
 func New(ctx context.Context, client *http.Client, org string) (*Client, error) {
-	if !validOrganization(org) {
+	if !organizationPattern.MatchString(org) {
 		return nil, errors.New("invalid GitHub organization")
 	}
 	secret, err := readAppSecret(ctx)
@@ -176,19 +179,6 @@ func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL, lis
 func (g *Client) SetDefaultBranch(ctx context.Context, repoName, branch string) error {
 	_, _, err := g.api.Repositories.Edit(ctx, g.org, repoName, &sdk.Repository{DefaultBranch: new(branch)})
 	return retryPolicy(err)
-}
-
-func validOrganization(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, c := range name {
-		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 func retryPolicy(err error) error {
