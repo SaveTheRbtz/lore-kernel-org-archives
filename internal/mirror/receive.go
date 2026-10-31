@@ -66,7 +66,7 @@ func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 	}
 	n, err := w.w.Write(p)
 	w.n += int64(n)
-	w.metrics.AddBytes("send", int64(n))
+	w.metrics.BytesSent(int64(n))
 	if n > 0 {
 		w.health.SyncProgress()
 	}

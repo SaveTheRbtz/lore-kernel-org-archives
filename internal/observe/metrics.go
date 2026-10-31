@@ -173,14 +173,14 @@ func (t *Telemetry) Busy(active bool) {
 	}
 }
 
-func (t *Telemetry) AddBytes(direction string, n int64) {
-	if t == nil || n <= 0 {
-		return
-	}
-	switch direction {
-	case "receive":
+func (t *Telemetry) BytesReceived(n int64) {
+	if t != nil && n > 0 {
 		t.received.Add(n)
-	case "send":
+	}
+}
+
+func (t *Telemetry) BytesSent(n int64) {
+	if t != nil && n > 0 {
 		t.sent.Add(n)
 	}
 }

@@ -319,7 +319,7 @@ func (p relayProgress) Write(b []byte) (int, error) {
 
 func (r *relayCountingReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
-	r.metrics.AddBytes("receive", int64(n))
+	r.metrics.BytesReceived(int64(n))
 	if n > 0 {
 		r.health.SyncProgress()
 	}
