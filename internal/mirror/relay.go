@@ -194,27 +194,35 @@ func (s *relaySession) push(ctx context.Context, commands []*packp.Command) (int
 			_ = fetch.Capabilities.Set(capability.OFSDelta)
 			_ = update.Capabilities.Set(capability.OFSDelta)
 		}
-		response, fetchErr := s.upload.UploadPack(ctx, fetch)
-		if fetchErr != nil {
-			// go-git's UnexpectedError does not implement Unwrap.
-			if unexpected, ok := fetchErr.(*plumbing.UnexpectedError); ok {
-				fetchErr = unexpected.Err
-			}
-			return 0, fmt.Errorf("upload-pack: %w", fetchErr)
+		var err error
+		update.Packfile, err = s.fetchPack(ctx, fetch)
+		if err != nil {
+			return 0, err
 		}
-		s.relay.health.SyncProgress()
-		var pack io.Reader = response
-		if fetch.Capabilities.Supports(capability.Sideband64k) {
-			demux := sideband.NewDemuxer(sideband.Sideband64k, response)
-			demux.Progress = relayProgress{s.relay.health}
-			pack = demux
-		}
-		update.Packfile = &relayCountingReader{Reader: pack, Closer: response, metrics: s.relay.metrics, health: s.relay.health}
 	} else if needsPack {
 		// Receive-pack requires a valid pack even when all objects already exist.
 		update.Packfile = io.NopCloser(bytes.NewReader(relayEmptyPack()))
 	}
 	return s.relay.receivePack(ctx, s.destinationURL, s.token, update)
+}
+
+func (s *relaySession) fetchPack(ctx context.Context, fetch *packp.UploadPackRequest) (io.ReadCloser, error) {
+	response, err := s.upload.UploadPack(ctx, fetch)
+	if err != nil {
+		// go-git's UnexpectedError does not implement Unwrap.
+		if unexpected, ok := err.(*plumbing.UnexpectedError); ok {
+			err = unexpected.Err
+		}
+		return nil, fmt.Errorf("upload-pack: %w", err)
+	}
+	s.relay.health.SyncProgress()
+	var pack io.Reader = response
+	if fetch.Capabilities.Supports(capability.Sideband64k) {
+		demux := sideband.NewDemuxer(sideband.Sideband64k, response)
+		demux.Progress = relayProgress{s.relay.health}
+		pack = demux
+	}
+	return &relayCountingReader{Reader: pack, Closer: response, metrics: s.relay.metrics, health: s.relay.health}, nil
 }
 
 func relayEndpoint(raw string) (*transport.Endpoint, error) {
