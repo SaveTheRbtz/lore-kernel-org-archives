@@ -2,7 +2,6 @@ project=kernelorg-mirror
 region=us-central1
 name=lore-mirror
 build_sa="projects/$project/serviceAccounts/lore-build@$project.iam.gserviceaccount.com"
-source_bucket="gs://$project-build-source"
 infra_sa="projects/$project/serviceAccounts/lore-infra@$project.iam.gserviceaccount.com"
 deployment="projects/$project/locations/$region/deployments/$name"
 

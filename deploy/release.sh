@@ -5,7 +5,7 @@ source deploy/config.sh
 
 digest=$(gcloud builds submit . --region="$region" \
   --service-account="$build_sa" \
-  --gcs-source-staging-dir="$source_bucket/source" --suppress-logs --format='value(results.images[0].digest)')
+  --gcs-source-staging-dir="gs://$project-build-source/source" --suppress-logs --format='value(results.images[0].digest)')
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'Cloud Build returned no valid image digest\n' >&2; exit 1; }
 image="$region-docker.pkg.dev/$project/$name/$name@$digest"
 
