@@ -174,6 +174,43 @@ func TestRelayRequiresCompleteStatusAndReadBack(t *testing.T) {
 	}
 }
 
+func TestRelayPreservesThrottlingAtEveryHTTPStage(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		request    int32
+		status     int
+		header     string
+		delay      time.Duration
+	}{
+		{"source advertisement", "/source.git/info/refs", 1, 403, "42", 42 * time.Second},
+		{"destination advertisement", "/destination.git/info/refs", 1, 429, "", time.Minute},
+		{"upload-pack", "/source.git/git-upload-pack", 1, 503, "42", 42 * time.Second},
+		{"verification", "/destination.git/info/refs", 2, 429, "42", 42 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newRelayTestServer(t)
+			hash := relayTestCommit(t, s.source, "mail")
+			relayTestSetRef(t, s.source, "refs/heads/master", hash)
+			var requests atomic.Int32
+			s.beforeHTTP = func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path != tc.path || requests.Add(1) != tc.request {
+					return false
+				}
+				w.Header().Set("Retry-After", tc.header)
+				http.Error(w, "throttled test-token", tc.status)
+				return true
+			}
+			_, err := s.sync(t, 0)
+			if delay := serverRetryAfter(err); delay != tc.delay {
+				t.Fatalf("scheduler delay = %s, want %s; error=%v", delay, tc.delay, err)
+			}
+			if strings.Contains(err.Error(), "test-token") {
+				t.Fatalf("throttle error disclosed a credential: %v", err)
+			}
+		})
+	}
+}
+
 func TestRelaySidebandProgressKeepsSyncHealthy(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())

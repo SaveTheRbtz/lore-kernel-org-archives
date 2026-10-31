@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
@@ -78,7 +77,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	relay := &Relay{Client: client, MaxPushBytes: cfg.MaxPushBytes, metrics: metrics, health: health}
+	relay := &Relay{Client: newGitHTTPClient(client), MaxPushBytes: cfg.MaxPushBytes, metrics: metrics, health: health}
 	// The single worker retains approved IDs even when a sync fails.
 	repositories := map[string]gh.Repository{}
 	syncRepo := func(ctx context.Context, sourcePath string, entry lore.ManifestEntry) error {
@@ -150,15 +149,4 @@ func (c Config) validate() error {
 		return errors.New("max-push-bytes must be positive and less than 2 GiB")
 	}
 	return nil
-}
-
-func newHTTPClient() *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConnsPerHost = 4
-	transport.ResponseHeaderTimeout = time.Minute
-	return &http.Client{
-		Transport: transport,
-		// No request, especially an authenticated push, may change origin.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
 }

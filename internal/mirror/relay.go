@@ -145,6 +145,10 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 		}
 		response, fetchErr := up.UploadPack(ctx, fetch)
 		if fetchErr != nil {
+			// go-git's UnexpectedError does not implement Unwrap.
+			if unexpected, ok := fetchErr.(*plumbing.UnexpectedError); ok {
+				fetchErr = unexpected.Err
+			}
 			return result, fmt.Errorf("upload-pack: %w", fetchErr)
 		}
 		r.health.Progress("sync")

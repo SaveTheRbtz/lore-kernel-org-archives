@@ -41,6 +41,7 @@ type relayTestServer struct {
 	haves       []plumbing.Hash
 	beforePush  func()
 	beforePack  func(http.ResponseWriter) error
+	beforeHTTP  func(http.ResponseWriter, *http.Request) bool
 	failSource  bool
 	omitStatus  bool
 	skipUpdate  bool
@@ -71,6 +72,9 @@ func (s *relayTestServer) sync(t *testing.T, limit int64) (SyncResult, error) {
 }
 
 func (s *relayTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.beforeHTTP != nil && s.beforeHTTP(w, r) {
+		return
+	}
 	if err := s.handleHTTP(w, r); err != nil && w.Header().Get("Content-Type") == "" {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
@@ -311,5 +315,5 @@ func relayTestSetRef(t *testing.T, store storer.ReferenceStorer, name string, ha
 func relayTestClient(server *httptest.Server) *http.Client {
 	client := server.Client()
 	client.CheckRedirect = newHTTPClient().CheckRedirect
-	return client
+	return newGitHTTPClient(client)
 }

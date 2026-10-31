@@ -7,14 +7,11 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 
-	gh "lore-mirror/internal/github"
 	"lore-mirror/internal/observe"
 )
 
@@ -85,9 +82,6 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 				text = strings.ReplaceAll(text, token, "[redacted]")
 			}
 			receiveErr = fmt.Errorf("receive-pack HTTP %d: %s", response.StatusCode, text)
-			if delay := receiveRetryAfter(response); delay > 0 {
-				receiveErr = gh.WithRetryAfter(receiveErr, delay)
-			}
 		} else if contentType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type")); contentType != "application/x-git-receive-pack-result" {
 			receiveErr = fmt.Errorf("unexpected receive-pack content type %q", contentType)
 		} else {
@@ -109,20 +103,6 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	}
 	encoded := <-done
 	return encoded.n, errors.Join(receiveErr, encoded.err)
-}
-
-func receiveRetryAfter(response *http.Response) time.Duration {
-	value := response.Header.Get("Retry-After")
-	var delay time.Duration
-	if seconds, err := strconv.ParseUint(value, 10, 32); err == nil {
-		delay = time.Duration(seconds) * time.Second
-	} else if until, err := http.ParseTime(value); err == nil {
-		delay = time.Until(until)
-	}
-	if response.StatusCode == http.StatusTooManyRequests && delay <= 0 {
-		delay = time.Minute
-	}
-	return delay
 }
 
 func relayCheckReport(report *packp.ReportStatus, commands []*packp.Command) error {
