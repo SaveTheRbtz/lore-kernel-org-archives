@@ -20,19 +20,23 @@ func OrderedPaths(manifest Manifest) []string {
 // requireAll rejects misspelled inbox names on the initial discovery. Later
 // snapshots may remove inboxes while retaining the rest of the selection.
 func SelectManifest(manifest Manifest, lists string, requireAll bool) (Manifest, error) {
+	result := maps.Clone(manifest)
+	// lkml.1 is maintained manually because GitHub rejects the NUL in
+	// commit 299dbd50b6995c6debe2275f0df984ce697fb4cc.
+	delete(result, "/lkml/git/1.git")
 	if lists == "" {
-		return manifest, nil
+		return result, nil
 	}
 	selected := map[string]bool{}
 	for _, list := range strings.Split(lists, ",") {
 		selected[strings.TrimSpace(list)] = false
 	}
-	result := Manifest{}
-	for path, entry := range manifest {
+	for path := range manifest {
 		list := strings.Split(strings.TrimPrefix(path, "/"), "/")[0]
 		if _, ok := selected[list]; ok {
 			selected[list] = true
-			result[path] = entry
+		} else {
+			delete(result, path)
 		}
 	}
 	for list, found := range selected {

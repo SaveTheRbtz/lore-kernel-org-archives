@@ -5,19 +5,24 @@ import (
 	"testing"
 )
 
-func TestSelectManifestKeepsAllEpochsOfRequestedInbox(t *testing.T) {
+func TestSelectManifestKeepsAutomaticallyMirroredEpochs(t *testing.T) {
 	cgroups := ManifestEntry{Modified: 7, Description: "cgroups"}
 	oldEpoch := ManifestEntry{Modified: 11, Description: "old lkml epoch"}
 	newEpoch := ManifestEntry{Modified: 13, Description: "new lkml epoch"}
+	manifest := Manifest{
+		"/cgroups/git/0.git": cgroups,
+		"/lkml/git/0.git":    oldEpoch,
+		"/lkml/git/1.git":    {Description: "manually maintained"},
+		"/lkml/git/2.git":    newEpoch,
+	}
 	for _, test := range []struct {
 		lists string
 		want  Manifest
 	}{
-		{"", Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/1.git": newEpoch}},
-		{"lkml", Manifest{"/lkml/git/0.git": oldEpoch, "/lkml/git/1.git": newEpoch}},
-		{" cgroups, lkml ", Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/1.git": newEpoch}},
+		{"", Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/2.git": newEpoch}},
+		{"lkml", Manifest{"/lkml/git/0.git": oldEpoch, "/lkml/git/2.git": newEpoch}},
+		{" cgroups, lkml ", Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/2.git": newEpoch}},
 	} {
-		manifest := Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/1.git": newEpoch}
 		got, err := SelectManifest(manifest, test.lists, true)
 		if err != nil || !maps.Equal(got, test.want) {
 			t.Errorf("select %q = %v, %v; want %v", test.lists, got, err, test.want)
@@ -33,9 +38,9 @@ func TestSelectManifestRejectsUnknownInboxInitially(t *testing.T) {
 }
 
 func TestSelectManifestReconcilesRemovedInboxesAndNewEpochs(t *testing.T) {
-	manifest := Manifest{"/lkml/git/0.git": {}, "/lkml/git/1.git": {}, "/other/git/0.git": {}}
+	manifest := Manifest{"/lkml/git/0.git": {}, "/lkml/git/1.git": {}, "/lkml/git/2.git": {}, "/other/git/0.git": {}}
 	got, err := SelectManifest(manifest, "lkml,cgroups", false)
-	want := Manifest{"/lkml/git/0.git": {}, "/lkml/git/1.git": {}}
+	want := Manifest{"/lkml/git/0.git": {}, "/lkml/git/2.git": {}}
 	if err != nil || !maps.Equal(got, want) {
 		t.Fatalf("selection after cgroups removal = %v, %v; want %v", got, err, want)
 	}

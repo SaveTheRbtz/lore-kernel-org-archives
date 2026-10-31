@@ -4,6 +4,8 @@ Mirror [lore.kernel.org](https://lore.kernel.org) mailing-list archives to [lore
 
 The service discovers archives automatically and streams Git packs directly to GitHub. It keeps no local archive or database. GitHub repositories are mirrors: upstream ref changes and removals are propagated, so do not edit them directly. Removing an archive from Lore's manifest does not delete its GitHub repository.
 
+`lkml.1` is maintained manually. Its history omits Lore commit `299dbd50b6995c6debe2275f0df984ce697fb4cc` because GitHub rejects a NUL byte in the commit message. Later commits have different IDs from Lore.
+
 ## Deployment
 
 The deployment uses project `kernelorg-mirror` and a size-one managed instance group (MIG), `lore-mirror`, in `us-central1-a`. Its `e2-medium` VM has 4 GiB RAM and a disposable 20 GiB boot disk, costing approximately $29/month before network traffic and other usage.
