@@ -117,8 +117,9 @@ func (d *daemon) run(ctx context.Context) error {
 			if err == nil {
 				throttles = 0
 				active.failures = 0
-				active.next = now.Add(jitter(d.recheck))
-				if !sameRevision(active.entry, activeEntry) {
+				if sameRevision(active.entry, activeEntry) {
+					active.next = now.Add(jitter(d.recheck))
+				} else {
 					active.next = now
 				}
 			} else if ctx.Err() == nil {
