@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -162,7 +162,7 @@ func TestDiscoveryContinuesDuringSyncWithoutStarvingBackfill(t *testing.T) {
 		}
 		close(release)
 		synctest.Wait()
-		if got := drainWork(attempted); !reflect.DeepEqual(got, []string{"/cold", "/hot"}) {
+		if got := drainWork(attempted); !slices.Equal(got, []string{"/cold", "/hot"}) {
 			t.Fatalf("lost update, inventory, or backfill fairness: %v", got)
 		}
 	})
@@ -227,7 +227,7 @@ func TestRunOnceContinuesPastFailure(t *testing.T) {
 	if err := d.runOnce(context.Background()); err == nil {
 		t.Fatal("failed sync was not reported")
 	}
-	if !reflect.DeepEqual(attempted, []string{"/a", "/b"}) {
+	if !slices.Equal(attempted, []string{"/a", "/b"}) {
 		t.Fatalf("remaining work skipped: %v", attempted)
 	}
 }

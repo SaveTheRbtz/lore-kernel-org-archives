@@ -71,11 +71,10 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 			log.Error("metrics_shutdown_failed", "error", err)
 		}
 	}()
-	token, err := gh.TokenSource(ctx, client)
+	github, err := gh.New(ctx, client, cfg.Org)
 	if err != nil {
 		return err
 	}
-	github := &gh.GitHub{Client: client, Org: cfg.Org, Token: token}
 	relay := &Relay{Client: client, MaxPushBytes: cfg.MaxPushBytes, metrics: metrics, health: health}
 	// The single worker owns this cache. Restarting simply rechecks the API.
 	type cachedRepository struct {
@@ -99,7 +98,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		credential, err := token(ctx)
+		credential, err := github.Token(ctx)
 		if err != nil {
 			return err
 		}

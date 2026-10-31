@@ -4,27 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/bradleyfalzon/ghinstallation/v2"
+	"github.com/google/go-cmp/cmp"
+	sdk "github.com/google/go-github/v88/github"
 )
 
-func TestGitHubEnsureRepository(t *testing.T) {
+func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 	const sourcePath = "/lkml/git/20.git"
 	const name = "lkml.20"
-	var stored *githubRepository
+	var stored *sdk.Repository
 	var mu sync.Mutex
 	var creates atomic.Int32
 	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
-		if r.Header.Get("Authorization") != "Bearer test-token" {
-			t.Error("missing authentication")
-		}
 		if r.Method == http.MethodGet && r.URL.Path == "/repos/testorg/"+name {
 			if stored == nil {
 				w.WriteHeader(http.StatusNotFound)
@@ -51,17 +54,18 @@ func TestGitHubEnsureRepository(t *testing.T) {
 				t.Errorf("%s should be explicitly false, got %v", field, value)
 			}
 		}
-		stored = &githubRepository{ID: 123, Name: name, FullName: "testorg/" + name, Homepage: "https://lore.kernel.org" + sourcePath}
+		stored = testRepository(name, sourcePath)
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(stored)
 	})
 	for range 2 {
-		repo, err := g.EnsureRepository(context.Background(), sourcePath, "LKML [epoch 20]")
+		got, err := g.EnsureRepository(context.Background(), sourcePath, "LKML [epoch 20]")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if repo.Name != name || repo.GitURL != "https://github.com/testorg/"+name+".git" {
-			t.Fatalf("unexpected repository: %+v", repo)
+		want := Repository{Name: name, GitURL: "https://github.com/testorg/lkml.20.git"}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("repository (-want +got):\n%s", diff)
 		}
 	}
 	if creates.Load() != 1 {
@@ -69,27 +73,37 @@ func TestGitHubEnsureRepository(t *testing.T) {
 	}
 }
 
-func TestGitHubRefusesUnrelatedRepository(t *testing.T) {
-	const name = "lkml.0"
-	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("must not mutate unrelated repository: %s", r.Method)
-		}
-		_ = json.NewEncoder(w).Encode(githubRepository{ID: 1, Name: name, FullName: "testorg/" + name, Homepage: "https://example.org/unrelated"})
-	})
-	_, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
-	if err == nil || !strings.Contains(err.Error(), "provenance") {
-		t.Fatalf("expected source collision rejection, got %v", err)
+func TestEnsureRepositoryRefusesUnsafeAdoption(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*sdk.Repository)
+	}{
+		{"unrelated", func(r *sdk.Repository) { r.Homepage = sdk.Ptr("https://example.org/unrelated") }},
+		{"private", func(r *sdk.Repository) { r.Private = sdk.Ptr(true) }},
+		{"archived", func(r *sdk.Repository) { r.Archived = sdk.Ptr(true) }},
+		{"fork", func(r *sdk.Repository) { r.Fork = sdk.Ptr(true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote := testRepository("lkml.0", "/lkml/git/0.git")
+			tc.change(remote)
+			g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("must not mutate an unsafe repository: %s", r.Method)
+				}
+				_ = json.NewEncoder(w).Encode(remote)
+			})
+			if _, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", ""); err == nil {
+				t.Fatal("unsafe repository adopted")
+			}
+		})
 	}
 }
 
-func TestGitHubCreateLostResponse(t *testing.T) {
-	const name = "netdev.0"
+func TestEnsureRepositoryRecoversLostCreationResponse(t *testing.T) {
 	var created atomic.Bool
 	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			created.Store(true)
-			// Model a server that accepted the mutation but returned an error.
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
@@ -97,14 +111,14 @@ func TestGitHubCreateLostResponse(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(githubRepository{ID: 1, Name: name, FullName: "testorg/" + name, Homepage: "https://lore.kernel.org/netdev/git/0.git"})
+		_ = json.NewEncoder(w).Encode(testRepository("netdev.0", "/netdev/git/0.git"))
 	})
 	if _, err := g.EnsureRepository(context.Background(), "/netdev/git/0.git", ""); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestGitHubDefaultBranch(t *testing.T) {
+func TestSetDefaultBranchSkipsUnchangedBranch(t *testing.T) {
 	branch := "main"
 	patches := 0
 	var mu sync.Mutex
@@ -113,15 +127,13 @@ func TestGitHubDefaultBranch(t *testing.T) {
 		defer mu.Unlock()
 		if r.Method == http.MethodPatch {
 			patches++
-			var update struct {
-				DefaultBranch string `json:"default_branch"`
-			}
+			var update sdk.Repository
 			if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
 				t.Error(err)
 			}
-			branch = update.DefaultBranch
+			branch = update.GetDefaultBranch()
 		}
-		_ = json.NewEncoder(w).Encode(githubRepository{DefaultBranch: branch})
+		_ = json.NewEncoder(w).Encode(sdk.Repository{DefaultBranch: sdk.Ptr(branch)})
 	})
 	for range 2 {
 		if err := g.SetDefaultBranch(context.Background(), "lkml.0", "master"); err != nil {
@@ -135,58 +147,126 @@ func TestGitHubDefaultBranch(t *testing.T) {
 	}
 }
 
-func TestGitHubRateLimitAndRedaction(t *testing.T) {
-	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Retry-After", "42")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"message":"denied test-token"}`))
-	})
-	_, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
-	var apiErr *GitHubAPIError
-	if !errors.As(err, &apiErr) || apiErr.RetryAfter() != 42*time.Second {
-		t.Fatalf("expected retryable HTTP error, got %v", err)
-	}
-	if strings.Contains(err.Error(), "test-token") {
-		t.Fatal("token leaked in error")
-	}
-}
-
-func TestGitHubRejectsRedirectAndPlainHTTP(t *testing.T) {
-	var redirected atomic.Int32
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirected.Add(1) }))
-	defer target.Close()
-	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
-	})
-	_, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
-	var apiErr *GitHubAPIError
-	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusTemporaryRedirect || redirected.Load() != 0 {
-		t.Fatalf("redirect followed or misreported: %v", err)
-	}
-	g.AllowHTTP = false
-	_, err = g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
-	if err == nil || !strings.Contains(err.Error(), "HTTPS") {
-		t.Fatalf("expected HTTP rejection, got %v", err)
+func TestRepositoryOperationsPropagateRateLimits(t *testing.T) {
+	for _, operation := range []string{"get", "create", "edit"} {
+		t.Run(operation, func(t *testing.T) {
+			g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && operation == "create" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if r.Method == http.MethodGet && operation == "edit" {
+					_ = json.NewEncoder(w).Encode(sdk.Repository{DefaultBranch: sdk.Ptr("main")})
+					return
+				}
+				w.Header().Set("Retry-After", "42")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"message":"secondary rate limit","documentation_url":"https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits"}`))
+			})
+			var err error
+			if operation == "edit" {
+				err = g.SetDefaultBranch(context.Background(), "lkml.0", "master")
+			} else {
+				_, err = g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
+			}
+			var limited interface{ RetryAfter() time.Duration }
+			if !errors.As(err, &limited) || limited.RetryAfter() <= 0 {
+				t.Fatalf("%s did not expose a scheduler cooldown: %v", operation, err)
+			}
+		})
 	}
 }
 
-func TestGitHubRejectsOversizedResponse(t *testing.T) {
-	response := paddedJSON([]byte(`{"id":1,"name":"lkml.0","full_name":"testorg/lkml.0","homepage":"https://lore.kernel.org/lkml/git/0.git"}`), 2<<20)
-	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(response)
+func TestRetryPolicyPreservesSDKRateLimits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			err   error
+			delay time.Duration
+		}{
+			{"primary reset", &sdk.RateLimitError{Rate: sdk.Rate{Reset: sdk.Timestamp{Time: time.Now().Add(2 * time.Minute)}}}, 2 * time.Minute},
+			{"secondary specified", &sdk.AbuseRateLimitError{RetryAfter: sdk.Ptr(42 * time.Second)}, 42 * time.Second},
+			{"secondary unspecified", &sdk.AbuseRateLimitError{}, time.Minute},
+			{"bounded", &sdk.AbuseRateLimitError{RetryAfter: sdk.Ptr(48 * time.Hour)}, 24 * time.Hour},
+		} {
+			got := retryPolicy(tc.err)
+			var limited interface{ RetryAfter() time.Duration }
+			if !errors.As(got, &limited) || limited.RetryAfter() != tc.delay || !errors.Is(got, tc.err) {
+				t.Fatalf("%s: SDK rate limit was not preserved with the expected retry delay", tc.name)
+			}
+		}
+		ordinary := errors.New("not rate limited")
+		if retryPolicy(ordinary) != ordinary || retryPolicy(nil) != nil {
+			t.Fatal("non-rate-limit errors changed")
+		}
 	})
-	_, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
-	if err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("expected response limit error, got %v", err)
+}
+
+func TestRetryPolicyClosesAuthResponseAndPreservesRateLimit(t *testing.T) {
+	body := &trackedBody{Reader: strings.NewReader(`{"documentation_url":"https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits"}`)}
+	auth := &ghinstallation.HTTPError{
+		Message: "token endpoint rejected request",
+		Response: &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     http.Header{"Retry-After": []string{"42"}},
+			Body:       body,
+		},
+	}
+	client := &http.Client{
+		Timeout: time.Second,
+		Transport: authTransport{roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			body.ctx = req.Context()
+			return nil, auth
+		})},
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.github.com/repos/testorg/lkml.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Do(req)
+	err = retryPolicy(err)
+	var limited interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &limited) || limited.RetryAfter() != 42*time.Second || !errors.Is(err, auth) {
+		t.Fatalf("auth failure lost its cause or cooldown: %v", err)
+	}
+	if !body.closed {
+		t.Fatal("auth response body was not closed")
 	}
 }
 
-func newTestGitHub(t *testing.T, handler http.HandlerFunc) *GitHub {
+type trackedBody struct {
+	io.Reader
+	ctx    context.Context
+	closed bool
+}
+
+func (b *trackedBody) Read(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return b.Reader.Read(p)
+}
+
+func (b *trackedBody) Close() error { b.closed = true; return nil }
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func newTestGitHub(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return &GitHub{
-		Client: server.Client(), APIBase: server.URL, Org: "testorg", AllowHTTP: true,
-		Token: func(context.Context) (string, error) { return "test-token", nil },
+	client, err := sdk.NewClient(sdk.WithHTTPClient(server.Client()), sdk.WithURLs(sdk.Ptr(server.URL+"/"), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Client{api: client, org: "testorg"}
+}
+
+func testRepository(name, path string) *sdk.Repository {
+	return &sdk.Repository{
+		ID: sdk.Ptr[int64](123), Name: sdk.Ptr(name), FullName: sdk.Ptr("testorg/" + name),
+		Homepage: sdk.Ptr("https://lore.kernel.org" + path), CloneURL: sdk.Ptr("https://untrusted.example/repo.git"),
 	}
 }

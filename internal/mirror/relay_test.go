@@ -24,7 +24,12 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/server"
 	"github.com/go-git/go-git/v5/storage/memory"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
 // Both ends are real in-memory Git object stores behind smart-HTTP handlers.
 // The test server uses go-git's pack encoder/decoder, without invoking Git.
@@ -311,8 +316,12 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Changed || result.DefaultBranch != "master" {
-		t.Fatalf("unexpected initial result: %+v", result)
+	want := SyncResult{Changed: true, DefaultBranch: "master", SourceRefs: map[string]plumbing.Hash{
+		"refs/heads/master": first,
+		"refs/meta/origins": first,
+	}}
+	if diff := cmp.Diff(want, result, cmpopts.IgnoreFields(SyncResult{}, "Bytes")); diff != "" {
+		t.Fatalf("initial sync (-want +got):\n%s", diff)
 	}
 	if _, err := s.destination.EncodedObject(plumbing.CommitObject, first); err != nil {
 		t.Fatalf("destination lacks commit: %v", err)
