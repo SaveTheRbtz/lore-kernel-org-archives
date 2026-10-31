@@ -102,8 +102,7 @@ func StartHealthServer(health *Health) (func(context.Context) error, <-chan erro
 	server := &http.Server{Handler: health, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	failures := make(chan error, 1)
 	go func() {
-		defer close(failures)
-		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
 			failures <- fmt.Errorf("health server: %w", err)
 		}
 	}()
