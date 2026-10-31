@@ -51,11 +51,8 @@ func (d *daemon) pollManifests(ctx context.Context, updates chan lore.Manifest) 
 			case <-updates:
 			default:
 			}
-			select {
-			case updates <- manifest:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+			// This poller is the only sender, so the slot is available.
+			updates <- manifest
 		}
 		timer := time.NewTimer(jitter(d.recheck))
 		select {
