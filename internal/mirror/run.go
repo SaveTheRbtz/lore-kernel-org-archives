@@ -131,7 +131,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		cancel()
 		return errors.Join(fmt.Errorf("health server stopped: %w", err), <-finished)
 	}
-	if errors.Is(err, context.Canceled) {
+	if !cfg.Once && errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
