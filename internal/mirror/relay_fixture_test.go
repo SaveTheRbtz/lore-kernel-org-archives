@@ -341,6 +341,6 @@ func relayTestSetRef(t *testing.T, store storer.ReferenceStorer, name string, ha
 
 func relayTestClient(server *httptest.Server) *http.Client {
 	client := server.Client()
-	client.CheckRedirect = newHTTPClient().CheckRedirect
+	client.CheckRedirect = rejectRedirects
 	return newGitHTTPClient(client)
 }

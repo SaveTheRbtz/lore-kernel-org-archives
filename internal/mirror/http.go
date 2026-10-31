@@ -14,11 +14,13 @@ func newHTTPClient() *http.Client {
 	transport.MaxIdleConnsPerHost = 4
 	transport.ResponseHeaderTimeout = time.Minute
 	return &http.Client{
-		Transport: transport,
-		// No request, especially an authenticated push, may change origin.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Transport:     transport,
+		CheckRedirect: rejectRedirects,
 	}
 }
+
+// Return every redirect to the caller, including redirects on authenticated pushes.
+func rejectRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // Keep Git throttling separate from the GitHub SDK's own retry handling.
 func newGitHTTPClient(client *http.Client) *http.Client {
