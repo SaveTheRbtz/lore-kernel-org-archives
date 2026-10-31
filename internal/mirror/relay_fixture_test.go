@@ -39,8 +39,6 @@ type relayTestServer struct {
 	uploads     int
 	pushes      int
 	haves       []plumbing.Hash
-	boundaries  map[plumbing.Hash][]plumbing.Hash
-	rejectPush  func(*packp.ReferenceUpdateRequest) bool
 	beforePush  func()
 	beforePack  func(http.ResponseWriter) error
 	beforeHTTP  func(http.ResponseWriter, *http.Request) bool
@@ -59,11 +57,7 @@ func newRelayTestServer(t *testing.T) *relayTestServer {
 
 func (s *relayTestServer) sync(t *testing.T, limit int64) (SyncResult, error) {
 	t.Helper()
-	timeout := 5 * time.Second
-	if s.boundaries != nil {
-		timeout = 30 * time.Minute // Checkpoint scenarios advance virtual time.
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if limit == 0 {
 		limit = DefaultMaxPushBytes
@@ -124,21 +118,12 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 			if err == nil {
 				err = adv.Capabilities.Set(capability.Sideband64k)
 			}
-			if err == nil && s.boundaries != nil {
-				err = adv.Capabilities.Set(capability.Shallow)
-				if err == nil {
-					err = adv.Capabilities.Set(capability.AllowReachableSHA1InWant)
-				}
-			}
 		} else {
 			session, sessionErr := service.NewReceivePackSession(ep, nil)
 			if sessionErr != nil {
 				return sessionErr
 			}
 			adv, err = session.AdvertisedReferencesContext(r.Context())
-			if err == nil && s.boundaries != nil {
-				err = adv.Capabilities.Set(capability.Atomic)
-			}
 			if err == nil && s.receiveBand {
 				err = adv.Capabilities.Set(capability.Sideband64k)
 			}
@@ -155,28 +140,6 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 		req := packp.NewUploadPackRequest()
 		if err := req.Decode(r.Body); err != nil {
 			return err
-		}
-		// Map large negotiation depths onto small, real commit histories. No
-		// pack is requested until the relay completes the checkpoint plan.
-		if s.boundaries != nil && !req.Depth.IsZero() {
-			if req.Depth != packp.DepthCommits(10001) || len(req.Wants) != 1 {
-				return errors.New("unexpected checkpoint negotiation")
-			}
-			trailing, err := io.ReadAll(r.Body)
-			if err != nil {
-				return err
-			}
-			if len(trailing) != 0 {
-				return errors.New("checkpoint negotiation requested pack data")
-			}
-			w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
-			encoder := pktline.NewEncoder(w)
-			for _, boundary := range s.boundaries[req.Wants[0]] {
-				if err := encoder.Encodef("shallow %s\n", boundary); err != nil {
-					return err
-				}
-			}
-			return encoder.Flush()
 		}
 		scan := pktline.NewScanner(r.Body)
 		for scan.Scan() {
@@ -241,6 +204,9 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 			return err
 		}
 		useSideband := req.Capabilities.Supports(capability.Sideband64k)
+		if s.receiveBand != useSideband {
+			return errors.New("relay did not negotiate the advertised receiver sideband")
+		}
 		writeReport := func(report *packp.ReportStatus) error {
 			w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
 			if !useSideband {
@@ -254,13 +220,6 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 				return err
 			}
 			return pktline.NewEncoder(w).Flush()
-		}
-		if s.rejectPush != nil && s.rejectPush(req) {
-			if _, err := io.Copy(io.Discard, r.Body); err != nil {
-				return err
-			}
-			http.Error(w, "injected receive-pack failure", http.StatusInternalServerError)
-			return nil
 		}
 		if s.beforePush != nil {
 			s.beforePush()
@@ -301,7 +260,6 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 		}
 		var report *packp.ReportStatus
 		req.Capabilities.Delete(capability.Sideband64k)
-		req.Capabilities.Delete(capability.Atomic)
 		if s.skipUpdate {
 			if _, err := io.Copy(io.Discard, r.Body); err != nil {
 				return err

@@ -25,12 +25,6 @@ import (
 func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	s := newRelayTestServer(t)
 	s.receiveBand = true
-	s.rejectPush = func(req *packp.ReferenceUpdateRequest) bool {
-		if !req.Capabilities.Supports(capability.Sideband64k) {
-			t.Error("receiver sideband diagnostics were not requested")
-		}
-		return false
-	}
 	first := relayTestCommit(t, s.source, "first mail")
 	relayTestSetRef(t, s.source, "refs/heads/master", first)
 	relayTestSetRef(t, s.source, "refs/meta/origins", first)

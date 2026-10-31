@@ -28,7 +28,6 @@ type relayLimitedWriter struct {
 }
 
 type receivePackError struct {
-	status  int
 	message string
 	cause   error
 }
@@ -88,10 +87,8 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 		done <- encodedResult{limited.n, err}
 	}()
 	var remote bytes.Buffer
-	status := 0
 	response, receiveErr := r.Client.Do(request)
 	if receiveErr == nil {
-		status = response.StatusCode
 		if response.StatusCode != http.StatusOK {
 			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 			receiveErr = fmt.Errorf("receive-pack HTTP %d (protocol=%s, request_id=%s): %s",
@@ -141,7 +138,7 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	if detail != "" {
 		message += "\nremote: " + detail
 	}
-	return encoded.n, &receivePackError{status: status, message: message, cause: cause}
+	return encoded.n, &receivePackError{message: message, cause: cause}
 }
 
 func relayCheckReport(report *packp.ReportStatus, commands []*packp.Command) error {
