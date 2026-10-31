@@ -105,6 +105,8 @@ func newTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
 		return nil, err
 	}
 	t.operations, t.duration = operations, duration
+	receivedAttrs := metric.WithAttributes(attribute.String("direction", "receive"))
+	sentAttrs := metric.WithAttributes(attribute.String("direction", "send"))
 	_, err := meter.RegisterCallback(func(_ context.Context, observer metric.Observer) error {
 		t.mu.Lock()
 		elapsed, active := t.busyTime, int64(0)
@@ -121,8 +123,8 @@ func newTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
 		}
 		observer.ObserveInt64(stuck, unhealthy)
 		observer.ObserveFloat64(workTime, elapsed.Seconds())
-		observer.ObserveInt64(transfer, t.received.Load(), metric.WithAttributes(attribute.String("direction", "receive")))
-		observer.ObserveInt64(transfer, t.sent.Load(), metric.WithAttributes(attribute.String("direction", "send")))
+		observer.ObserveInt64(transfer, t.received.Load(), receivedAttrs)
+		observer.ObserveInt64(transfer, t.sent.Load(), sentAttrs)
 		samples := []runtimemetrics.Sample{
 			{Name: "/memory/classes/total:bytes"},
 			{Name: "/memory/classes/heap/released:bytes"},
