@@ -10,7 +10,7 @@ The service discovers archives automatically and streams Git packs directly to G
 
 The deployment uses project `kernelorg-mirror` and a size-one managed instance group (MIG), `lore-mirror`, in `us-central1-a`. Its `e2-medium` VM has 4 GiB RAM and a disposable 20 GiB boot disk, costing approximately $29/month before network traffic and other usage.
 
-Terraform in `infra/` is managed by Infrastructure Manager. Cloud Build builds the image and Artifact Registry stores it. Use an authenticated `gcloud` CLI, Python 3, and `flock` to deploy:
+Terraform in `infra/` is managed by Infrastructure Manager. Cloud Build builds the image and Artifact Registry stores it. The deployment scripts use an authenticated `gcloud` CLI, `flock`, and GNU coreutils.
 
 ```sh
 # Build and deploy a new release.
@@ -22,13 +22,12 @@ deploy/apply.sh
 
 Image or configuration changes replace the VM, stopping the old worker before starting its replacement. Terraform waits for the group update to finish. Infrastructure Manager stores Terraform state; a local Terraform installation is unnecessary.
 
-Edit `infra/runtime.auto.tfvars.json` to configure the service:
+`deploy/release.sh` records the image digest in `infra/image.auto.tfvars`. Edit `infra/runtime.auto.tfvars.json` to configure the worker.
 
 | Setting | Meaning |
 | --- | --- |
 | `enabled` | Run one VM when true; scale to zero when false |
 | `lists` | Comma-separated inbox names, such as `cgroups`; empty selects all inboxes |
-| `image` | Image digest, updated by `deploy/release.sh` |
 
 Start with one inbox, check the resulting repository and logs, then expand the selection.
 

@@ -10,16 +10,11 @@ digest=$(gcloud builds submit . --region="$region" \
 image="$region-docker.pkg.dev/$project/$name/$name@$digest"
 
 lock_deployment
-python3 - "$image" <<'PY'
-import json, pathlib, shutil, sys, tempfile
-path = pathlib.Path("infra/runtime.auto.tfvars.json")
-config = json.loads(path.read_text())
-config["image"] = sys.argv[1]
-with tempfile.TemporaryDirectory(dir=path.parent) as staging:
-    updated = pathlib.Path(staging) / path.name
-    updated.write_text(json.dumps(config, indent=2) + "\n")
-    shutil.copymode(path, updated)
-    updated.replace(path)
-PY
+input=infra/image.auto.tfvars
+staged=$(mktemp "$input.XXXXXX")
+trap 'rm -f "$staged"' EXIT
+printf 'image = "%s"\n' "$image" > "$staged"
+chmod --reference="$input" "$staged"
+mv -f "$staged" "$input"
 apply_deployment
 printf 'Deployed %s\n' "$image"
