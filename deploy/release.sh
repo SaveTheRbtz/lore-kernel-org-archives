@@ -9,6 +9,7 @@ digest=$(gcloud builds submit . --region="$region" \
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'Cloud Build returned no valid image digest\n' >&2; exit 1; }
 image="$region-docker.pkg.dev/$project/$name/$name@$digest"
 
+lock_deployment
 python3 - "$image" <<'PY'
 import json, pathlib, shutil, sys, tempfile
 path = pathlib.Path("infra/runtime.auto.tfvars.json")
@@ -20,5 +21,5 @@ with tempfile.TemporaryDirectory(dir=path.parent) as staging:
     shutil.copymode(path, updated)
     updated.replace(path)
 PY
-deploy/apply.sh
+apply_deployment
 printf 'Deployed %s\n' "$image"

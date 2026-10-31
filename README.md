@@ -10,7 +10,7 @@ The service discovers archives automatically and streams Git packs directly to G
 
 The deployment uses project `kernelorg-mirror` and a size-one managed instance group (MIG), `lore-mirror`, in `us-central1-a`. Its `e2-medium` VM has 4 GiB RAM and a disposable 20 GiB boot disk, costing approximately $29/month before network traffic and other usage.
 
-Terraform in `infra/` is managed by Infrastructure Manager. Cloud Build builds the image and Artifact Registry stores it. Use an authenticated `gcloud` CLI and Python 3 to deploy:
+Terraform in `infra/` is managed by Infrastructure Manager. Cloud Build builds the image and Artifact Registry stores it. Use an authenticated `gcloud` CLI, Python 3, and `flock` to deploy:
 
 ```sh
 # Build and deploy a new release.
