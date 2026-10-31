@@ -34,19 +34,35 @@ func startDaemon(t *testing.T, d *daemon) context.CancelFunc {
 	return cancel
 }
 
+type manifestResult struct {
+	manifest lore.Manifest
+	err      error
+}
+
+func readManifests(updates <-chan manifestResult) func(context.Context) (lore.Manifest, error) {
+	return func(ctx context.Context) (lore.Manifest, error) {
+		select {
+		case update := <-updates:
+			return update.manifest, update.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
 func TestNextRunSurvivesDiscovery(t *testing.T) {
 	for _, tc := range []struct {
-		name                   string
-		err                    error
-		before, after, recheck time.Duration
+		name                      string
+		err                       error
+		minimum, maximum, recheck time.Duration
 	}{
-		{"recheck", nil, 10*time.Minute - time.Second, time.Minute + time.Second, 10 * time.Minute},
-		{"transient", errors.New("temporary failure"), 59 * time.Second, 8 * time.Second, 10 * time.Second},
-		{"oversized", ErrPushTooLarge, 23 * time.Hour, time.Hour + time.Second, time.Hour},
+		{"recheck", nil, 10 * time.Minute, 11 * time.Minute, 10 * time.Minute},
+		{"transient", errors.New("temporary failure"), time.Minute, 66 * time.Second, 10 * time.Second},
+		{"oversized", ErrPushTooLarge, 24 * time.Hour, 24 * time.Hour, time.Hour},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				attempts := make(chan time.Time, 16)
+				attempts := make(chan time.Time, 1)
 				d := daemon{
 					fetch: func(context.Context) (lore.Manifest, error) {
 						entry := lore.ManifestEntry{}
@@ -66,16 +82,16 @@ func TestNextRunSurvivesDiscovery(t *testing.T) {
 					log: testLogger(), recheck: tc.recheck, timeout: time.Hour,
 				}
 				startDaemon(t, &d)
-				<-attempts
-				time.Sleep(tc.before)
+				first := <-attempts
+				time.Sleep(tc.maximum)
 				synctest.Wait()
-				if len(attempts) != 0 {
-					t.Fatalf("extra attempts before next run=%d, want 0", len(attempts))
-				}
-				time.Sleep(tc.after)
-				synctest.Wait()
-				if len(attempts) != 1 {
-					t.Fatalf("extra attempts after next run=%d, want 1", len(attempts))
+				select {
+				case second := <-attempts:
+					if delay := second.Sub(first); delay < tc.minimum || delay > tc.maximum {
+						t.Fatalf("next attempt after %s, want %s to %s", delay, tc.minimum, tc.maximum)
+					}
+				default:
+					t.Fatalf("no next attempt within %s", tc.maximum)
 				}
 			})
 		})
@@ -89,72 +105,62 @@ func TestRateLimitBackoffAcrossRepositories(t *testing.T) {
 			at   time.Time
 		}
 		attempted := make(chan attempt)
-		first := true
+		results := make(chan error)
+		updates := make(chan manifestResult, 1)
+		updates <- manifestResult{manifest: lore.Manifest{"/a": {}, "/b": {}, "/c": {}, "/d": {}, "/e": {}, "/f": {}}}
 		d := daemon{
-			fetch: func(ctx context.Context) (lore.Manifest, error) {
-				if !first {
-					<-ctx.Done()
-					return nil, ctx.Err()
-				}
-				first = false
-				return lore.Manifest{"/a": {}, "/b": {}, "/c": {}, "/d": {}, "/e": {}, "/f": {}}, nil
-			},
+			fetch: readManifests(updates),
 			sync: func(ctx context.Context, path string, _ lore.ManifestEntry) error {
 				select {
 				case attempted <- attempt{path, time.Now()}:
 				case <-ctx.Done():
 					return ctx.Err()
 				}
-				switch path {
-				case "/c":
-					return nil
-				case "/e":
-					return delayedError(3 * time.Hour)
-				case "/f":
-					<-ctx.Done()
+				select {
+				case err := <-results:
+					return err
+				case <-ctx.Done():
 					return ctx.Err()
-				default:
-					return delayedError(time.Minute)
 				}
 			},
 			log: testLogger(), recheck: time.Nanosecond, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
-		var previous time.Time
-		for i, delay := range []time.Duration{0, time.Minute, 2 * time.Minute, 0, time.Minute, 3 * time.Hour} {
+		previous := time.Now()
+		expect := func(path string, minimum, maximum time.Duration) {
+			t.Helper()
 			got := <-attempted
-			if want := "/" + string(rune('a'+i)); got.path != want {
-				t.Fatalf("attempted %q, want next untried repository %q", got.path, want)
+			if got.path != path {
+				t.Fatalf("attempted %q, want next untried repository %q", got.path, path)
 			}
-			if i > 0 {
-				elapsed := got.at.Sub(previous)
-				if elapsed < delay || elapsed > delay+delay/10 {
-					t.Fatalf("delay before %s = %s, want %s plus at most 10%% jitter", got.path, elapsed, delay)
-				}
+			if elapsed := got.at.Sub(previous); elapsed < minimum || elapsed > maximum {
+				t.Fatalf("delay before %s = %s, want %s to %s", path, elapsed, minimum, maximum)
 			}
 			previous = got.at
 		}
+		expect("/a", 0, 0)
+		results <- delayedError(time.Minute)
+		expect("/b", time.Minute, 66*time.Second)
+		results <- delayedError(time.Minute)
+		expect("/c", 2*time.Minute, 132*time.Second)
+		results <- nil
+		expect("/d", 0, 0)
+		results <- delayedError(time.Minute)
+		expect("/e", time.Minute, 66*time.Second)
+		results <- delayedError(3 * time.Hour)
+		expect("/f", 3*time.Hour, 3*time.Hour)
 	})
 }
 
 func TestPendingUpdatesWhileSyncIsBlocked(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var pending atomic.Int64
-		var attempts atomic.Int64
 		started := make(chan struct{})
-		manifests := make(chan lore.Manifest, 1)
-		manifests <- lore.Manifest{"/a": {}, "/b": {}}
+		updates := make(chan manifestResult, 1)
+		updates <- manifestResult{manifest: lore.Manifest{"/a": {}, "/b": {}}}
 		d := daemon{
-			fetch: func(ctx context.Context) (lore.Manifest, error) {
-				select {
-				case manifest := <-manifests:
-					return manifest, nil
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			},
+			fetch: readManifests(updates),
 			sync: func(ctx context.Context, path string, _ lore.ManifestEntry) error {
-				attempts.Add(1)
 				if path == "/a" {
 					return nil
 				}
@@ -175,28 +181,23 @@ func TestPendingUpdatesWhileSyncIsBlocked(t *testing.T) {
 		if got := pending.Load(); got != 1 {
 			t.Fatalf("repository becoming due during sync: pending=%d, want 1", got)
 		}
-		manifests <- lore.Manifest{"/b": {}, "/c": {}, "/d": {}}
+		updates <- manifestResult{manifest: lore.Manifest{"/b": {}, "/c": {}, "/d": {}}}
 		synctest.Wait()
-		if got := pending.Load(); got != 2 || attempts.Load() != 2 {
-			t.Fatalf("reconciled pending=%d, attempts=%d; want 2 pending behind one blocked sync", got, attempts.Load())
+		if got := pending.Load(); got != 2 {
+			t.Fatalf("reconciled pending=%d, want 2 behind the blocked sync", got)
 		}
 	})
 }
 
 func TestDiscoveryContinuesDuringSyncWithoutStarvingBackfill(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var polls atomic.Int64
 		release := make(chan struct{})
 		started := make(chan struct{})
 		attempted := make(chan string, 16)
+		updates := make(chan manifestResult, 1)
+		updates <- manifestResult{manifest: lore.Manifest{"/hot": {Modified: 1}, "/cold": {}}}
 		d := daemon{
-			fetch: func(context.Context) (lore.Manifest, error) {
-				poll := polls.Add(1)
-				if poll > 2 {
-					return nil, errors.New("discovery unavailable")
-				}
-				return lore.Manifest{"/hot": {Modified: poll}, "/cold": {}}, nil
-			},
+			fetch: readManifests(updates),
 			sync: func(ctx context.Context, path string, entry lore.ManifestEntry) error {
 				select {
 				case attempted <- path:
@@ -213,15 +214,21 @@ func TestDiscoveryContinuesDuringSyncWithoutStarvingBackfill(t *testing.T) {
 				}
 				return nil
 			},
-			log: testLogger(), recheck: 10 * time.Minute, timeout: 24 * time.Hour,
+			log: testLogger(), recheck: time.Nanosecond, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
 		<-started
-		drainWork(attempted) // Either archive can win its independent initial delay.
-		time.Sleep(3 * d.recheck)
+		if got := <-attempted; got != "/hot" {
+			t.Fatalf("initial work=%q, want newest archive /hot", got)
+		}
+		updates <- manifestResult{manifest: lore.Manifest{"/hot": {Modified: 2}, "/cold": {}}}
+		time.Sleep(time.Nanosecond)
 		synctest.Wait()
-		if got := drainWork(attempted); polls.Load() < 3 || len(got) != 0 {
-			t.Fatalf("discovery blocked behind sync: polls=%d work=%v", polls.Load(), got)
+		updates <- manifestResult{err: errors.New("discovery unavailable")}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		if got := drainWork(attempted); len(got) != 0 {
+			t.Fatalf("work overlapped blocked sync: %v", got)
 		}
 		close(release)
 		synctest.Wait()
@@ -233,19 +240,11 @@ func TestDiscoveryContinuesDuringSyncWithoutStarvingBackfill(t *testing.T) {
 
 func TestRemovedArchivesAreNotRetried(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var removed atomic.Bool
-		var polls atomic.Int64
 		attempted := make(chan string, 16)
+		updates := make(chan manifestResult, 1)
+		updates <- manifestResult{manifest: lore.Manifest{"/removed": {}}}
 		d := daemon{
-			fetch: func(context.Context) (lore.Manifest, error) {
-				if !removed.Load() {
-					return lore.Manifest{"/removed": {}}, nil
-				}
-				if polls.Add(1) == 1 {
-					return lore.Manifest{}, nil
-				}
-				return lore.Manifest{"/remaining": {}}, nil
-			},
+			fetch: readManifests(updates),
 			sync: func(ctx context.Context, path string, _ lore.ManifestEntry) error {
 				select {
 				case attempted <- path:
@@ -253,7 +252,6 @@ func TestRemovedArchivesAreNotRetried(t *testing.T) {
 					return ctx.Err()
 				}
 				if path == "/removed" {
-					removed.Store(true)
 					return errors.New("temporary failure")
 				}
 				return nil
@@ -261,15 +259,18 @@ func TestRemovedArchivesAreNotRetried(t *testing.T) {
 			log: testLogger(), recheck: 10 * time.Second, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
-		for _, want := range []string{"/removed", "/remaining"} {
-			if got := <-attempted; got != want {
-				t.Fatalf("attempted %q, want %q", got, want)
-			}
+		if got := <-attempted; got != "/removed" {
+			t.Fatalf("initial work=%q, want /removed", got)
 		}
+		updates <- manifestResult{manifest: lore.Manifest{}}
 		time.Sleep(2 * time.Minute)
 		synctest.Wait()
-		if got := drainWork(attempted); slices.Contains(got, "/removed") {
+		if got := drainWork(attempted); len(got) != 0 {
 			t.Fatalf("removed archive retried: %v", got)
+		}
+		updates <- manifestResult{manifest: lore.Manifest{"/remaining": {}}}
+		if got := <-attempted; got != "/remaining" {
+			t.Fatalf("work after inventory repopulated=%q, want /remaining", got)
 		}
 	})
 }
@@ -298,17 +299,10 @@ func TestRunOnceContinuesPastFailure(t *testing.T) {
 func TestHealthReportsBlockedWorkAndRecoversAfterCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		health := &observe.Health{}
-		release := make(chan struct{})
+		updates := make(chan manifestResult)
 		started := make(chan struct{})
 		d := daemon{
-			fetch: func(ctx context.Context) (lore.Manifest, error) {
-				select {
-				case <-release:
-					return lore.Manifest{"/a": {}}, nil
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			},
+			fetch: readManifests(updates),
 			sync: func(ctx context.Context, _ string, _ lore.ManifestEntry) error {
 				close(started)
 				<-ctx.Done()
@@ -326,7 +320,7 @@ func TestHealthReportsBlockedWorkAndRecoversAfterCancellation(t *testing.T) {
 		time.Sleep(5 * time.Minute)
 		synctest.Wait()
 		check(true)
-		close(release)
+		updates <- manifestResult{manifest: lore.Manifest{"/a": {}}}
 		<-started
 		synctest.Wait()
 		check(false)
