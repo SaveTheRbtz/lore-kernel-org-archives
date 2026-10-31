@@ -1,35 +1,55 @@
 package lore
 
 import (
+	"encoding/json/jsontext"
+	"errors"
+	"log/slog"
 	"maps"
+	"slices"
 	"testing"
 )
 
-func TestSelectManifestKeepsAutomaticallyMirroredEpochs(t *testing.T) {
-	cgroups := ManifestEntry{Modified: 7, Description: "cgroups"}
-	oldEpoch := ManifestEntry{Modified: 11, Description: "old lkml epoch"}
-	newEpoch := ManifestEntry{Modified: 13, Description: "new lkml epoch"}
-	manifest := Manifest{
-		"/cgroups/git/0.git": cgroups,
-		"/lkml/git/0.git":    oldEpoch,
-		"/lkml/git/2.git":    newEpoch,
+func TestManifestSelection(t *testing.T) {
+	entry := jsontext.Value(`{"fingerprint":"` + manifestTestFingerprint + `","modified":0}`)
+	raw := map[string]jsontext.Value{
+		"/cgroups/git/0.git": entry,
+		"/lkml/git/0.git":    entry,
+		"/lkml/git/2.git":    entry,
+		"/legacy":            jsontext.Value(`null`),
 	}
-	for _, test := range []struct {
-		lists string
-		want  Manifest
+	all := []string{"/cgroups/git/0.git", "/lkml/git/0.git", "/lkml/git/2.git"}
+	lkml := all[1:]
+	for _, tc := range []struct {
+		lists      string
+		requireAll bool
+		want       []string
+		wantErr    error
 	}{
-		{"", Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/2.git": newEpoch}},
-		{"lkml", Manifest{"/lkml/git/0.git": oldEpoch, "/lkml/git/2.git": newEpoch}},
-		{" cgroups, lkml ", Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/2.git": newEpoch}},
+		{"", true, all, nil},
+		{"lkml", true, lkml, nil},
+		{" cgroups, lkml ", true, all, nil},
+		{"lkml,lkml,legacy", true, lkml, nil},
+		{"lkml,missing", true, nil, ErrUnknownInbox},
+		{"lkml,missing", false, lkml, nil},
 	} {
-		names, err := ParseLists(test.lists)
+		names, err := ParseLists(tc.lists)
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := selectManifest(maps.Clone(manifest), maps.Keys(manifest), names, true)
-		if err != nil || !maps.Equal(got, test.want) {
-			t.Errorf("select %q = %v, %v; want %v", test.lists, got, err, test.want)
+		got, err := manifestFromEntries(raw, slog.Default(), names, tc.requireAll)
+		if !errors.Is(err, tc.wantErr) || (err != nil && got != nil) || !slices.Equal(slices.Sorted(maps.Keys(got)), tc.want) {
+			t.Errorf("lists=%q requireAll=%t: got %v, %v; want %v, %v", tc.lists, tc.requireAll, got, err, tc.want, tc.wantErr)
 		}
+	}
+}
+
+func TestSelectionValidatesUnselectedEntries(t *testing.T) {
+	raw := map[string]jsontext.Value{
+		"/cgroups/git/0.git": jsontext.Value(`{"fingerprint":"` + manifestTestFingerprint + `","modified":0}`),
+		"/lkml/git/0.git":    jsontext.Value(`{}`),
+	}
+	if got, err := manifestFromEntries(raw, slog.Default(), map[string]bool{"cgroups": true}, true); got != nil || err == nil {
+		t.Fatalf("malformed unselected archive: got %v, %v", got, err)
 	}
 }
 
@@ -38,21 +58,5 @@ func TestParseListsRejectsInvalidNames(t *testing.T) {
 		if names, err := ParseLists(invalid); err == nil || names != nil {
 			t.Fatalf("ParseLists(%q) = %v, %v", invalid, names, err)
 		}
-	}
-}
-
-func TestSelectManifestRejectsUnknownInboxInitially(t *testing.T) {
-	manifest := Manifest{"/lkml/git/0.git": {}}
-	if got, err := selectManifest(manifest, maps.Keys(manifest), []string{"lkml", "missing"}, true); err == nil || got != nil {
-		t.Fatalf("unknown inbox returned a partial selection: %v, %v", got, err)
-	}
-}
-
-func TestSelectManifestReconcilesRemovedInboxesAndNewEpochs(t *testing.T) {
-	manifest := Manifest{"/lkml/git/0.git": {}, "/lkml/git/2.git": {}, "/other/git/0.git": {}}
-	got, err := selectManifest(manifest, maps.Keys(manifest), []string{"lkml", "cgroups"}, false)
-	want := Manifest{"/lkml/git/0.git": {}, "/lkml/git/2.git": {}}
-	if err != nil || !maps.Equal(got, want) {
-		t.Fatalf("selection after cgroups removal = %v, %v; want %v", got, err, want)
 	}
 }

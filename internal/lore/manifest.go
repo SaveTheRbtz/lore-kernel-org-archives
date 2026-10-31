@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"math"
 	"net/http"
 	"regexp"
@@ -49,7 +48,7 @@ func (e ManifestEntry) Summary(sourcePath, address string) string {
 }
 
 // FetchManifest skips unsharded archives and rejects malformed inventories.
-func FetchManifest(ctx context.Context, client *http.Client, log *slog.Logger, lists []string, requireAll bool) (Manifest, error) {
+func FetchManifest(ctx context.Context, client *http.Client, log *slog.Logger, lists map[string]bool, requireAll bool) (Manifest, error) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, Origin+"/manifest.js.gz", nil)
@@ -89,7 +88,7 @@ func FetchManifest(ctx context.Context, client *http.Client, log *slog.Logger, l
 	return manifestFromEntries(raw, log, lists, requireAll)
 }
 
-func manifestFromEntries(raw map[string]jsontext.Value, log *slog.Logger, lists []string, requireAll bool) (Manifest, error) {
+func manifestFromEntries(raw map[string]jsontext.Value, log *slog.Logger, lists map[string]bool, requireAll bool) (Manifest, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("manifest is empty")
 	}
@@ -123,17 +122,27 @@ func manifestFromEntries(raw map[string]jsontext.Value, log *slog.Logger, lists 
 		if entry.Modified == nil || *entry.Modified < 0 {
 			return nil, fmt.Errorf("manifest entry %q has no valid modified timestamp", path)
 		}
+		inbox := InboxName(path)
+		epochs[inbox]++
+		// lkml.1 is maintained manually because GitHub rejects the NUL in
+		// commit 299dbd50b6995c6debe2275f0df984ce697fb4cc.
+		if name == "lkml.1" || (len(lists) != 0 && !lists[inbox]) {
+			continue
+		}
 		manifest[path] = ManifestEntry{Fingerprint: entry.Fingerprint, Modified: *entry.Modified, Description: entry.Description}
-		epochs[InboxName(path)]++
+	}
+	if requireAll {
+		for name := range lists {
+			if _, unsharded := raw["/"+name]; epochs[name] == 0 && !unsharded {
+				return nil, fmt.Errorf("%w: %q", ErrUnknownInbox, name)
+			}
+		}
 	}
 	for path, entry := range manifest {
 		entry.Epochs = epochs[InboxName(path)]
 		manifest[path] = entry
 	}
-	// lkml.1 is maintained manually because GitHub rejects the NUL in
-	// commit 299dbd50b6995c6debe2275f0df984ce697fb4cc.
-	delete(manifest, names["lkml.1"])
-	return selectManifest(manifest, maps.Keys(raw), lists, requireAll)
+	return manifest, nil
 }
 
 const listNamePattern = `[A-Za-z0-9][A-Za-z0-9._-]*`
