@@ -2,6 +2,7 @@ package lore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,7 +42,7 @@ func FetchAddress(ctx context.Context, client *http.Client, sourcePath string) (
 	parsed := config.New()
 	err = config.NewDecoder(reader).Decode(parsed)
 	if reader.N == 0 {
-		return "", fmt.Errorf("inbox config exceeds 64 KiB")
+		return "", errors.New("inbox config exceeds 64 KiB")
 	}
 	if err != nil {
 		return "", fmt.Errorf("decode inbox config: %w", err)
@@ -51,7 +52,7 @@ func FetchAddress(ctx context.Context, client *http.Client, sourcePath string) (
 		return "", nil
 	}
 	if len(inboxes) != 1 {
-		return "", fmt.Errorf("inbox config contains multiple inboxes")
+		return "", errors.New("inbox config contains multiple inboxes")
 	}
 	addresses := inboxes[0].OptionAll("address")
 	if len(addresses) == 0 {

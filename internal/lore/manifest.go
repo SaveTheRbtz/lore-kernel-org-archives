@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -86,7 +87,7 @@ func FetchManifest(ctx context.Context, client *http.Client, log *slog.Logger, l
 
 func manifestFromEntries(raw map[string]jsontext.Value, log *slog.Logger, lists string, requireAll bool) (Manifest, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("manifest is empty")
+		return nil, errors.New("manifest is empty")
 	}
 	manifest := make(Manifest, len(raw))
 	names := make(map[string]string, len(raw))
