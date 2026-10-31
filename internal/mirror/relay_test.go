@@ -39,9 +39,6 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	if result.RefCount != 2 {
 		t.Fatalf("source ref count = %d, want 2", result.RefCount)
 	}
-	if result.DefaultBranch != "master" {
-		t.Fatalf("default branch = %q, want master", result.DefaultBranch)
-	}
 	for _, name := range []plumbing.ReferenceName{plumbing.Master, "refs/meta/origins"} {
 		if ref, err := s.destination.Reference(name); err != nil || ref.Hash() != first {
 			t.Fatalf("destination %s = %v, error %v; want %s", name, ref, err, first)

@@ -51,10 +51,9 @@ type relaySession struct {
 }
 
 type SyncResult struct {
-	Changed       bool
-	RefCount      int
-	DefaultBranch string
-	Bytes         int64
+	Changed  bool
+	RefCount int
+	Bytes    int64
 }
 
 // Sync mirrors one source advertisement, leaving GitHub's pull-request refs alone.
@@ -102,13 +101,13 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 	if err != nil {
 		return result, fmt.Errorf("destination: %w", err)
 	}
-	result.DefaultBranch = relayDefaultBranch(src, sourceRefs)
+	defaultBranch := relayDefaultBranch(src, sourceRefs)
 	session := relaySession{
 		relay: r, upload: up, receive: down,
 		source: src, destination: dst, destinationRefs: destinationRefs,
 		destinationURL: destination.String(), token: token,
 	}
-	changingDefault := result.DefaultBranch != "" && result.DefaultBranch != currentDefault
+	changingDefault := defaultBranch != "" && defaultBranch != currentDefault
 	oldRef := "refs/heads/" + currentDefault
 	deletingCurrentDefault := destinationRefs[oldRef] != plumbing.ZeroHash && sourceRefs[oldRef] == plumbing.ZeroHash
 	firstTarget := sourceRefs
@@ -116,15 +115,15 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 	if staged {
 		// GitHub rejects deletion of its current default. Publish only the replacement first.
 		firstTarget = maps.Clone(destinationRefs)
-		newRef := "refs/heads/" + result.DefaultBranch
+		newRef := "refs/heads/" + defaultBranch
 		firstTarget[newRef] = sourceRefs[newRef]
 	}
 	if err := session.reconcile(ctx, firstTarget, &result); err != nil {
 		return result, err
 	}
 	if changingDefault {
-		if err := setDefault(result.DefaultBranch); err != nil {
-			return result, fmt.Errorf("set default branch to %q: %w", result.DefaultBranch, err)
+		if err := setDefault(defaultBranch); err != nil {
+			return result, fmt.Errorf("set default branch to %q: %w", defaultBranch, err)
 		}
 		r.health.SyncProgress()
 	}
