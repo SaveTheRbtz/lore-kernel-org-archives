@@ -1,0 +1,6 @@
+/lore-mirror
+/coverage.out
+*.pem
+**/.terraform/
+*.tfstate*
+*.tfplan

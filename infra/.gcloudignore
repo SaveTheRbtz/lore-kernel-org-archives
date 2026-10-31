@@ -1,0 +1,5 @@
+.gcloudignore
+.terraform/
+*.tfstate*
+*.tfplan
+crash.log
