@@ -3,12 +3,10 @@ steps:
     args:
       - build
       - -t
-      - &image ${_REGION}-docker.pkg.dev/$PROJECT_ID/lore-mirror/lore-mirror:$BUILD_ID
+      - &image ${LOCATION}-docker.pkg.dev/$PROJECT_ID/lore-mirror/lore-mirror:$BUILD_ID
       - .
 images:
   - *image
-substitutions:
-  _REGION: us-central1
 options:
   logging: CLOUD_LOGGING_ONLY
 timeout: 1200s
