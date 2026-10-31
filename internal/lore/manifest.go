@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -35,8 +36,7 @@ type Manifest map[string]ManifestEntry
 
 // Summary adds the posting address and the epoch's one-based position.
 func (e ManifestEntry) Summary(sourcePath, address string) string {
-	_, epoch, _ := strings.Cut(sourcePath[1:], "/git/")
-	epoch = strings.TrimSuffix(epoch, ".git")
+	epoch := strings.TrimSuffix(path.Base(sourcePath), ".git")
 	description := strings.TrimSpace(e.Description)
 	description = strings.TrimSpace(strings.TrimSuffix(description, "[epoch "+epoch+"]"))
 	if address != "" {
