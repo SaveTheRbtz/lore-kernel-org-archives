@@ -12,6 +12,9 @@ import (
 )
 
 func checkpointRetry(err error) bool {
+	if serverRetryAfter(err) > 0 {
+		return false
+	}
 	var response *receivePackError
 	return errors.Is(err, ErrPushTooLarge) || errors.As(err, &response) && response.status >= 500
 }

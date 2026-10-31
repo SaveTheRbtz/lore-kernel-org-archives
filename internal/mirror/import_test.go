@@ -1,15 +1,26 @@
 package mirror
 
 import (
+	"errors"
 	"maps"
 	"testing"
 	"testing/synctest"
+	"time"
+
+	gh "lore-mirror/internal/github"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/google/go-cmp/cmp"
 )
+
+func TestCheckpointRetryHonorsCooldownWhenTheRequestAlsoExceedsItsLimit(t *testing.T) {
+	err := errors.Join(ErrPushTooLarge, gh.WithRetryAfter(errors.New("throttled"), time.Minute))
+	if checkpointRetry(err) {
+		t.Fatal("checkpoint discovery bypassed the server cooldown")
+	}
+}
 
 func checkpointTestServer(t *testing.T) (*relayTestServer, plumbing.Hash, plumbing.Hash, plumbing.Hash) {
 	t.Helper()
