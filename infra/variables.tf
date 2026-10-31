@@ -8,7 +8,7 @@ variable "image" {
 }
 
 variable "enabled" {
-  description = "Start mirroring after GitHub App credentials have been stored."
+  description = "Run one mirror VM when true; scale the group to zero when false."
   type        = bool
   default     = false
 }

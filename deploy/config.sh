@@ -1,6 +1,5 @@
 project=kernelorg-mirror
 region=us-central1
-zone=us-central1-a
 name=lore-mirror
 build_sa="lore-build@$project.iam.gserviceaccount.com"
 source_bucket="gs://$project-build-source"

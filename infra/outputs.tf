@@ -1,5 +1,5 @@
-output "vm" {
-  value = google_compute_instance.mirror.id
+output "instance_group" {
+  value = google_compute_instance_group_manager.mirror.id
 }
 
 output "image" {

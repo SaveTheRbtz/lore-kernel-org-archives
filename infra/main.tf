@@ -169,17 +169,43 @@ resource "google_compute_firewall" "iap_ssh" {
   target_service_accounts = [google_service_account.runtime.email]
 }
 
-resource "google_compute_instance" "mirror" {
-  name         = "lore-mirror"
+resource "google_compute_firewall" "health" {
+  name    = "lore-mirror-health"
+  network = google_compute_network.mirror.name
+  allow {
+    protocol = "tcp"
+    ports    = ["8080"]
+  }
+  source_ranges           = ["130.211.0.0/22", "35.191.0.0/16"]
+  target_service_accounts = [google_service_account.runtime.email]
+}
+
+resource "google_compute_health_check" "mirror" {
+  name                = "lore-mirror"
+  check_interval_sec  = 30
+  timeout_sec         = 5
+  healthy_threshold   = 1
+  unhealthy_threshold = 3
+  http_health_check {
+    port         = 8080
+    request_path = "/healthz"
+  }
+  log_config {
+    enable = true
+  }
+  depends_on = [google_project_service.api]
+}
+
+resource "google_compute_instance_template" "mirror" {
+  name_prefix  = "lore-mirror-"
   machine_type = "e2-medium"
-  zone         = "us-central1-a"
   labels       = { app = "lore-mirror" }
-  boot_disk {
-    initialize_params {
-      image = "projects/cos-cloud/global/images/cos-stable-121-18867-652-7"
-      size  = 20
-      type  = "pd-standard"
-    }
+  disk {
+    boot         = true
+    auto_delete  = true
+    source_image = "projects/cos-cloud/global/images/cos-stable-121-18867-652-7"
+    disk_size_gb = 20
+    disk_type    = "pd-standard"
   }
   network_interface {
     subnetwork = google_compute_subnetwork.mirror.id
@@ -196,13 +222,13 @@ resource "google_compute_instance" "mirror" {
     enable_vtpm                 = true
     enable_integrity_monitoring = true
   }
-  metadata = merge({
+  metadata = {
     "enable-oslogin"         = "TRUE"
     "block-project-ssh-keys" = "TRUE"
-    "lore-mirror-enabled"    = tostring(var.enabled)
     "lore-mirror-image"      = var.image
+    "lore-mirror-lists"      = var.lists
     "startup-script"         = file("${path.module}/startup.sh")
-  }, var.lists == "" ? {} : { "lore-mirror-lists" = var.lists })
+  }
   depends_on = [
     google_artifact_registry_repository_iam_member.runtime,
     google_secret_manager_secret_iam_member.runtime,
@@ -210,6 +236,30 @@ resource "google_compute_instance" "mirror" {
     google_project_iam_member.telemetry,
   ]
   lifecycle {
-    prevent_destroy = true
+    create_before_destroy = true
   }
+}
+
+resource "google_compute_instance_group_manager" "mirror" {
+  name                      = "lore-mirror"
+  base_instance_name        = "lore-mirror"
+  zone                      = "us-central1-a"
+  target_size               = var.enabled ? 1 : 0
+  wait_for_instances        = true
+  wait_for_instances_status = "UPDATED"
+  version {
+    instance_template = google_compute_instance_template.mirror.self_link_unique
+  }
+  auto_healing_policies {
+    health_check      = google_compute_health_check.mirror.id
+    initial_delay_sec = 300
+  }
+  update_policy {
+    type                  = "PROACTIVE"
+    minimal_action        = "REPLACE"
+    max_surge_fixed       = 0
+    max_unavailable_fixed = 1
+    replacement_method    = "RECREATE"
+  }
+  depends_on = [google_compute_firewall.health]
 }
