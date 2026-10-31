@@ -141,8 +141,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	case err = <-finished:
 	case err = <-healthFailures:
 		cancel()
-		<-finished
-		return fmt.Errorf("health server stopped: %w", err)
+		return errors.Join(fmt.Errorf("health server stopped: %w", err), <-finished)
 	}
 	if errors.Is(err, context.Canceled) {
 		return nil

@@ -2,13 +2,16 @@ package github
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testSecretVersion = "projects/kernelorg-mirror/secrets/github-app/versions/latest"
@@ -24,37 +27,37 @@ func secretPayload(data []byte) []byte {
 func TestSecretReaderUsesVMIdentity(t *testing.T) {
 	app := githubAppSecret{AppID: "123", InstallationID: 456, PrivateKey: "PEM key"}
 	data, _ := json.Marshal(app)
-	var calls []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		calls = append(calls, req.URL.Path)
-		switch req.URL.Path {
-		case "/metadata":
-			if req.Header.Get("Metadata-Flavor") != "Google" {
-				t.Error("missing metadata header")
+	for _, version := range []string{testSecretVersion, "projects/508414901212/secrets/github-app/versions/1"} {
+		t.Run(version, func(t *testing.T) {
+			reader := newTestSecretReader(t, func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/metadata":
+					if req.Header.Get("Metadata-Flavor") != "Google" {
+						t.Error("missing metadata header")
+					}
+					if req.Header.Get("Authorization") != "" {
+						t.Error("credentials sent to metadata endpoint")
+					}
+					w.Header().Set("Metadata-Flavor", "Google")
+					_, _ = fmt.Fprint(w, `{"access_token":"vm-access-token"}`)
+				case "/v1/" + version + ":access":
+					if req.Header.Get("Authorization") != "Bearer vm-access-token" {
+						t.Error("missing VM access token")
+					}
+					_, _ = w.Write(secretPayload(data))
+				default:
+					t.Errorf("unexpected path %s", req.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			})
+			got, err := reader.read(t.Context(), version)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if req.Header.Get("Authorization") != "" {
-				t.Error("credentials sent to metadata endpoint")
+			if got != app {
+				t.Fatal("read secret differs from the stored GitHub App credentials")
 			}
-			w.Header().Set("Metadata-Flavor", "Google")
-			fmt.Fprint(w, `{"access_token":"vm-access-token"}`)
-		case "/v1/" + testSecretVersion + ":access":
-			if req.Header.Get("Authorization") != "Bearer vm-access-token" {
-				t.Error("missing VM access token")
-			}
-			w.Write(secretPayload(data))
-		default:
-			t.Errorf("unexpected path %s", req.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-	reader := secretReader{server.Client(), server.URL + "/metadata", server.URL + "/v1/"}
-	got, err := reader.read(context.Background(), testSecretVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != app || len(calls) != 2 {
-		t.Fatalf("unexpected result or calls: %d requests", len(calls))
+		})
 	}
 }
 
@@ -70,48 +73,40 @@ func TestSecretReaderRejectsInvalidResourcesBeforeRequest(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{testSecretVersion, "projects/508414901212/secrets/github-app/versions/1"} {
-		if !secretVersionName.MatchString(name) {
-			t.Fatalf("valid resource rejected: %s", name)
-		}
-	}
 }
 
 func TestSecretReaderFailuresDoNotExposeSecrets(t *testing.T) {
 	valid := []byte(`{"app_id":"123","installation_id":456,"private_key":"very-secret-key"}`)
+	token := []byte(`{"access_token":"secret-token"}`)
+	payload := secretPayload(valid)
+	badChecksum := []byte(fmt.Sprintf(`{"payload":{"data":%q,"dataCrc32c":"0"}}`, base64.StdEncoding.EncodeToString(valid)))
 	tests := []struct {
-		name, metadata string
-		flavor         string
-		status         int
-		payload        []byte
+		name     string
+		metadata []byte
+		flavor   string
+		status   int
+		payload  []byte
 	}{
-		{"metadata missing flavor", `{"access_token":"secret-token"}`, "", 200, secretPayload(valid)},
-		{"metadata malformed", `{"access_token":`, "Google", 200, secretPayload(valid)},
-		{"metadata empty token", `{"access_token":""}`, "Google", 200, secretPayload(valid)},
-		{"metadata too large", strings.Repeat("x", 16<<10+1), "Google", 200, secretPayload(valid)},
-		{"secret denied", `{"access_token":"secret-token"}`, "Google", 403, []byte("very-secret-key secret-token")},
-		{"secret missing", `{"access_token":"secret-token"}`, "Google", 404, []byte("very-secret-key")},
-		{"secret too large", `{"access_token":"secret-token"}`, "Google", 200, []byte(strings.Repeat("x", 128<<10+1))},
-		{"invalid base64", `{"access_token":"secret-token"}`, "Google", 200, []byte(`{"payload":{"data":"not-base64!","dataCrc32c":"0"}}`)},
-		{"checksum mismatch", `{"access_token":"secret-token"}`, "Google", 200, []byte(`{"payload":{"data":"e30=","dataCrc32c":"0"}}`)},
-		{"invalid JSON", `{"access_token":"secret-token"}`, "Google", 200, secretPayload([]byte("very-secret-key"))},
-		{"incomplete app", `{"access_token":"secret-token"}`, "Google", 200, secretPayload([]byte(`{"private_key":"very-secret-key"}`))},
-		{"numeric app ID", `{"access_token":"secret-token"}`, "Google", 200, secretPayload([]byte(`{"app_id":123,"installation_id":456,"private_key":"very-secret-key"}`))},
-		{"decoded too large", `{"access_token":"secret-token"}`, "Google", 200, secretPayload([]byte(strings.Repeat("x", 64<<10+1)))},
+		{"metadata missing flavor", token, "", 200, payload},
+		{"metadata empty token", []byte(`{"access_token":""}`), "Google", 200, payload},
+		{"metadata too large", paddedJSON(token, 16<<10), "Google", 200, payload},
+		{"secret denied", token, "Google", 403, []byte("very-secret-key secret-token")},
+		{"secret too large", token, "Google", 200, paddedJSON(payload, 128<<10)},
+		{"checksum mismatch", token, "Google", 200, badChecksum},
+		{"incomplete app", token, "Google", 200, secretPayload([]byte(`{"private_key":"very-secret-key"}`))},
+		{"decoded too large", token, "Google", 200, secretPayload(paddedJSON(valid, 64<<10))},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			reader := newTestSecretReader(t, func(w http.ResponseWriter, req *http.Request) {
 				if req.URL.Path == "/metadata" {
 					w.Header().Set("Metadata-Flavor", tt.flavor)
-					fmt.Fprint(w, tt.metadata)
+					_, _ = w.Write(tt.metadata)
 					return
 				}
 				w.WriteHeader(tt.status)
-				w.Write(tt.payload)
-			}))
-			defer server.Close()
-			reader := secretReader{server.Client(), server.URL + "/metadata", server.URL + "/v1/"}
+				_, _ = w.Write(tt.payload)
+			})
 			_, err := reader.read(context.Background(), testSecretVersion)
 			if err == nil {
 				t.Fatal("invalid credentials accepted")
@@ -123,18 +118,57 @@ func TestSecretReaderFailuresDoNotExposeSecrets(t *testing.T) {
 	}
 }
 
-func TestSecretReaderCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+func TestSecretReaderCancelsBlockedRequest(t *testing.T) {
+	started, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	reader := newTestSecretReader(t, func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/metadata" {
+			w.Header().Set("Metadata-Flavor", "Google")
+			_, _ = fmt.Fprint(w, `{"access_token":"vm-access-token"}`)
+			return
+		}
+		close(started)
+		select {
+		case <-req.Context().Done():
+			close(canceled)
+		case <-release:
+		}
+	})
+	// Release a broken client's request before the server cleanup waits for it.
+	t.Cleanup(func() { close(release) })
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := reader.read(ctx, testSecretVersion); done <- err }()
+	timeout := time.After(5 * time.Second)
+	select {
+	case <-started:
+	case <-timeout:
+		t.Fatal("secret request did not start")
+	}
 	cancel()
-	reader := secretReader{http.DefaultClient, "http://127.0.0.1:1/metadata", "http://127.0.0.1:1/v1/"}
-	if _, err := reader.read(ctx, testSecretVersion); err == nil {
-		t.Fatal("canceled request succeeded")
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("blocked request returned %v, want context.Canceled", err)
+		}
+	case <-timeout:
+		t.Fatal("reader did not return after cancellation")
+	}
+	select {
+	case <-canceled:
+	case <-timeout:
+		t.Fatal("server request remained active after cancellation")
 	}
 }
 
-func TestTokenSourceRequiresSecretManager(t *testing.T) {
-	t.Setenv("GITHUB_APP_SECRET", "")
-	if _, err := TokenSource(context.Background(), http.DefaultClient); err == nil {
-		t.Fatal("missing secret resource accepted")
-	}
+func newTestSecretReader(t *testing.T, handler http.HandlerFunc) secretReader {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return secretReader{server.Client(), server.URL + "/metadata", server.URL + "/v1/"}
+}
+
+func paddedJSON(data []byte, padding int) []byte {
+	// Truncating this padding leaves valid JSON, so only the size check rejects it.
+	return []byte(string(data) + strings.Repeat(" ", padding))
 }

@@ -62,13 +62,13 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 	if err != nil {
 		return result, err
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	auth := &githttp.BasicAuth{Username: "x-access-token", Password: token}
 	down, err := gitClient.NewReceivePackSession(destination, auth)
 	if err != nil {
 		return result, err
 	}
-	defer down.Close()
+	defer func() { _ = down.Close() }()
 	src, err := up.AdvertisedReferencesContext(ctx)
 	if err != nil {
 		return result, fmt.Errorf("advertise source: %w", err)
@@ -149,7 +149,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 			return result, fmt.Errorf("upload-pack: %w", fetchErr)
 		}
 		r.health.Progress("sync")
-		defer response.Close()
+		defer func() { _ = response.Close() }()
 		var pack io.Reader = response
 		if fetch.Capabilities.Supports(capability.Sideband64k) {
 			pack = sideband.NewDemuxer(sideband.Sideband64k, response)
@@ -196,7 +196,7 @@ func (r *Relay) httpClient() *http.Client {
 	// A streaming request cannot be replayed, and credentials must not follow
 	// redirects. Reconfigure the endpoint explicitly if a repository moves.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return errors.New("Git HTTP redirects are disabled")
+		return errors.New("git HTTP redirects are disabled")
 	}
 	return &client
 }
@@ -206,11 +206,11 @@ func relayEndpoint(raw string, allowHTTP bool) (*transport.Endpoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.Host == "" || (u.Scheme != "https" && !(allowHTTP && u.Scheme == "http")) {
-		return nil, errors.New("Git endpoint must be an absolute HTTPS URL")
+	if u.Host == "" || (u.Scheme != "https" && (u.Scheme != "http" || !allowHTTP)) {
+		return nil, errors.New("git endpoint must be an absolute HTTPS URL")
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return nil, errors.New("Git endpoint must not contain credentials, a query, or a fragment")
+		return nil, errors.New("git endpoint must not contain credentials, a query, or a fragment")
 	}
 	return transport.NewEndpoint(strings.TrimRight(raw, "/"))
 }
@@ -341,10 +341,14 @@ func relayReceivePack(ctx context.Context, client *http.Client, destination, tok
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reader, writer := io.Pipe()
+	// HTTP cancellation can wait for its body reader. Unblock that reader
+	// before waiting for Do to return and closing the source pack below.
+	stop := context.AfterFunc(ctx, func() { _ = reader.CloseWithError(ctx.Err()) })
+	defer stop()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, destination+"/git-receive-pack", reader)
 	if err != nil {
-		reader.Close()
-		writer.Close()
+		_ = reader.Close()
+		_ = writer.Close()
 		return 0, err
 	}
 	request.SetBasicAuth("x-access-token", token)
@@ -381,14 +385,14 @@ func relayReceivePack(ctx context.Context, client *http.Client, destination, tok
 				receiveErr = relayCheckReport(report, update.Commands)
 			}
 		}
-		response.Body.Close()
+		_ = response.Body.Close()
 	}
 	// A receiver can reject a request before reading its body. Unblock both the
 	// pipe writer and a source HTTP read before joining the encoder goroutine.
 	cancel()
 	reader.CloseWithError(io.ErrClosedPipe)
 	if update.Packfile != nil {
-		update.Packfile.Close()
+		_ = update.Packfile.Close()
 	}
 	encoded := <-done
 	return encoded.n, errors.Join(receiveErr, encoded.err)

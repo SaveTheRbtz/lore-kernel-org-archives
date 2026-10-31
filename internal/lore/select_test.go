@@ -1,22 +1,41 @@
 package lore
 
-import "testing"
+import (
+	"maps"
+	"testing"
+)
 
-func TestSelectManifest(t *testing.T) {
+func TestSelectManifestKeepsAllEpochsOfRequestedInbox(t *testing.T) {
 	manifest := Manifest{"/cgroups/git/0.git": {}, "/lkml/git/0.git": {}, "/lkml/git/1.git": {}}
-	selected, err := SelectManifest(manifest, "lkml")
-	if err != nil || len(selected) != 2 {
-		t.Fatalf("selected %v, error %v", selected, err)
-	}
-	if _, err := SelectManifest(manifest, "missing"); err == nil {
-		t.Fatal("missing inbox accepted")
-	}
-	if _, err := SelectManifest(manifest, "../lkml"); err == nil {
-		t.Fatal("invalid inbox accepted")
-	}
-	if _, err := SelectManifest(Manifest{"/Example/git/0.git": {}, "/example/git/0.git": {}}, ""); err == nil {
-		t.Fatal("case-insensitive name collision accepted")
+	for _, test := range []struct {
+		lists string
+		want  Manifest
+	}{
+		{"", manifest},
+		{"lkml", Manifest{"/lkml/git/0.git": {}, "/lkml/git/1.git": {}}},
+		{" cgroups, lkml ", manifest},
+	} {
+		got, err := SelectManifest(manifest, test.lists)
+		if err != nil || !maps.Equal(got, test.want) {
+			t.Errorf("select %q = %v, %v; want %v", test.lists, got, err, test.want)
+		}
 	}
 }
 
-type delayedError struct{}
+func TestSelectManifestRejectsUnsafeSelection(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		manifest Manifest
+		lists    string
+	}{
+		{"missing inbox", Manifest{"/lkml/git/0.git": {}}, "missing"},
+		{"invalid inbox", Manifest{"/lkml/git/0.git": {}}, "../lkml"},
+		{"name collision", Manifest{"/Example/git/0.git": {}, "/example/git/0.git": {}}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got, err := SelectManifest(test.manifest, test.lists); err == nil || got != nil {
+				t.Fatalf("unsafe inventory accepted: %v, %v", got, err)
+			}
+		})
+	}
+}

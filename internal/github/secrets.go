@@ -75,7 +75,7 @@ func (r secretReader) read(ctx context.Context, name string) (githubAppSecret, e
 	}
 	data, err = r.get(ctx, r.secretURL+name+":access", "Authorization", "Bearer "+token.AccessToken, 128<<10)
 	if err != nil {
-		return secret, fmt.Errorf("Secret Manager access: %w", err)
+		return secret, fmt.Errorf("access Secret Manager: %w", err)
 	}
 	var response struct {
 		Payload struct {
@@ -84,11 +84,11 @@ func (r secretReader) read(ctx context.Context, name string) (githubAppSecret, e
 		} `json:"payload"`
 	}
 	if json.Unmarshal(data, &response) != nil || len(response.Payload.Data) == 0 || len(response.Payload.Data) > 64<<10 {
-		return secret, errors.New("Secret Manager returned an invalid payload")
+		return secret, errors.New("invalid payload from Secret Manager")
 	}
 	checksum, err := strconv.ParseUint(response.Payload.CRC32C, 10, 32)
 	if err != nil || uint32(checksum) != crc32.Checksum(response.Payload.Data, crc32.MakeTable(crc32.Castagnoli)) {
-		return secret, errors.New("Secret Manager payload checksum mismatch")
+		return secret, errors.New("checksum mismatch in Secret Manager payload")
 	}
 	if json.Unmarshal(response.Payload.Data, &secret) != nil || secret.AppID == "" || secret.InstallationID <= 0 || secret.PrivateKey == "" {
 		return githubAppSecret{}, errors.New("GitHub App secret requires app_id (string), installation_id (positive integer), and private_key (PEM string)")
@@ -106,7 +106,7 @@ func (r secretReader) get(ctx context.Context, endpoint, header, value string, l
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		// Error bodies may contain credentials. Status alone is sufficient.
 		return nil, fmt.Errorf("HTTP %d", res.StatusCode)

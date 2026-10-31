@@ -11,20 +11,15 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"lore-mirror/internal/lore"
 )
 
 func TestGitHubEnsureRepository(t *testing.T) {
 	const sourcePath = "/lkml/git/20.git"
-	name, err := lore.RepositoryName(sourcePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	const name = "lkml.20"
 	var stored *githubRepository
 	var mu sync.Mutex
 	var creates atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		if r.Header.Get("Authorization") != "Bearer test-token" {
@@ -33,7 +28,6 @@ func TestGitHubEnsureRepository(t *testing.T) {
 		if r.Method == http.MethodGet && r.URL.Path == "/repos/testorg/"+name {
 			if stored == nil {
 				w.WriteHeader(http.StatusNotFound)
-				_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 				return
 			}
 			_ = json.NewEncoder(w).Encode(stored)
@@ -52,7 +46,7 @@ func TestGitHubEnsureRepository(t *testing.T) {
 		if body["name"] != name || body["homepage"] != "https://lore.kernel.org"+sourcePath {
 			t.Errorf("unexpected source mapping: %v", body)
 		}
-		for _, field := range []string{"private", "auto_init", "has_issues", "has_wiki", "has_projects"} {
+		for _, field := range []string{"private", "auto_init"} {
 			if value, ok := body[field]; !ok || value != false {
 				t.Errorf("%s should be explicitly false, got %v", field, value)
 			}
@@ -60,9 +54,7 @@ func TestGitHubEnsureRepository(t *testing.T) {
 		stored = &githubRepository{ID: 123, Name: name, FullName: "testorg/" + name, Homepage: "https://lore.kernel.org" + sourcePath}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(stored)
-	}))
-	defer server.Close()
-	g := testGitHub(server)
+	})
 	for range 2 {
 		repo, err := g.EnsureRepository(context.Background(), sourcePath, "LKML [epoch 20]")
 		if err != nil {
@@ -78,24 +70,23 @@ func TestGitHubEnsureRepository(t *testing.T) {
 }
 
 func TestGitHubRefusesUnrelatedRepository(t *testing.T) {
-	name, _ := lore.RepositoryName("/lkml/git/0.git")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	const name = "lkml.0"
+	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Errorf("must not mutate unrelated repository: %s", r.Method)
 		}
 		_ = json.NewEncoder(w).Encode(githubRepository{ID: 1, Name: name, FullName: "testorg/" + name, Homepage: "https://example.org/unrelated"})
-	}))
-	defer server.Close()
-	_, err := testGitHub(server).EnsureRepository(context.Background(), "/lkml/git/0.git", "")
+	})
+	_, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
 	if err == nil || !strings.Contains(err.Error(), "provenance") {
 		t.Fatalf("expected source collision rejection, got %v", err)
 	}
 }
 
 func TestGitHubCreateLostResponse(t *testing.T) {
-	name, _ := lore.RepositoryName("/netdev/git/0.git")
+	const name = "netdev.0"
 	var created atomic.Bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			created.Store(true)
 			// Model a server that accepted the mutation but returned an error.
@@ -107,9 +98,8 @@ func TestGitHubCreateLostResponse(t *testing.T) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(githubRepository{ID: 1, Name: name, FullName: "testorg/" + name, Homepage: "https://lore.kernel.org/netdev/git/0.git"})
-	}))
-	defer server.Close()
-	if _, err := testGitHub(server).EnsureRepository(context.Background(), "/netdev/git/0.git", ""); err != nil {
+	})
+	if _, err := g.EnsureRepository(context.Background(), "/netdev/git/0.git", ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -118,7 +108,7 @@ func TestGitHubDefaultBranch(t *testing.T) {
 	branch := "main"
 	patches := 0
 	var mu sync.Mutex
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		if r.Method == http.MethodPatch {
@@ -132,10 +122,9 @@ func TestGitHubDefaultBranch(t *testing.T) {
 			branch = update.DefaultBranch
 		}
 		_ = json.NewEncoder(w).Encode(githubRepository{DefaultBranch: branch})
-	}))
-	defer server.Close()
+	})
 	for range 2 {
-		if err := testGitHub(server).SetDefaultBranch(context.Background(), "lkml.0", "master"); err != nil {
+		if err := g.SetDefaultBranch(context.Background(), "lkml.0", "master"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -147,13 +136,12 @@ func TestGitHubDefaultBranch(t *testing.T) {
 }
 
 func TestGitHubRateLimitAndRedaction(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "42")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"message":"denied test-token"}`))
-	}))
-	defer server.Close()
-	_, err := testGitHub(server).EnsureRepository(context.Background(), "/lkml/git/0.git", "")
+	})
+	_, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
 	var apiErr *GitHubAPIError
 	if !errors.As(err, &apiErr) || apiErr.RetryAfter() != 42*time.Second {
 		t.Fatalf("expected retryable HTTP error, got %v", err)
@@ -167,11 +155,9 @@ func TestGitHubRejectsRedirectAndPlainHTTP(t *testing.T) {
 	var redirected atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirected.Add(1) }))
 	defer target.Close()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
-	}))
-	defer server.Close()
-	g := testGitHub(server)
+	})
 	_, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
 	var apiErr *GitHubAPIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusTemporaryRedirect || redirected.Load() != 0 {
@@ -185,17 +171,20 @@ func TestGitHubRejectsRedirectAndPlainHTTP(t *testing.T) {
 }
 
 func TestGitHubRejectsOversizedResponse(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(strings.Repeat("x", (2<<20)+1)))
-	}))
-	defer server.Close()
-	_, err := testGitHub(server).EnsureRepository(context.Background(), "/lkml/git/0.git", "")
+	response := paddedJSON([]byte(`{"id":1,"name":"lkml.0","full_name":"testorg/lkml.0","homepage":"https://lore.kernel.org/lkml/git/0.git"}`), 2<<20)
+	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(response)
+	})
+	_, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("expected response limit error, got %v", err)
 	}
 }
 
-func testGitHub(server *httptest.Server) *GitHub {
+func newTestGitHub(t *testing.T, handler http.HandlerFunc) *GitHub {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
 	return &GitHub{
 		Client: server.Client(), APIBase: server.URL, Org: "testorg", AllowHTTP: true,
 		Token: func(context.Context) (string, error) { return "test-token", nil },

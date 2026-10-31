@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,7 +38,6 @@ type relayTestServer struct {
 	uploads     int
 	pushes      int
 	haves       []plumbing.Hash
-	chunked     bool
 	beforePush  func()
 	failSource  bool
 	omitStatus  bool
@@ -61,13 +60,19 @@ func (s *relayTestServer) sync(t *testing.T, limit int64) (SyncResult, error) {
 	result, err := r.Sync(ctx, s.server.URL+"/source.git", s.server.URL+"/destination.git", "test-token")
 	// Failed HTTP calls can return before their server handlers unwind.
 	s.sourceMu.Lock()
-	s.sourceMu.Unlock()
+	defer s.sourceMu.Unlock()
 	s.destMu.Lock()
-	s.destMu.Unlock()
+	defer s.destMu.Unlock()
 	return result, err
 }
 
 func (s *relayTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if err := s.handleHTTP(w, r); err != nil && w.Header().Get("Content-Type") == "" {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+}
+
+func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) error {
 	var store *memory.Storage
 	var base string
 	if strings.HasPrefix(r.URL.Path, "/source.git/") {
@@ -84,40 +89,45 @@ func (s *relayTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != "x-access-token" || pass != "test-token" {
 			http.Error(w, "missing authentication", http.StatusUnauthorized)
-			return
+			return nil
 		}
 	}
-	ep, _ := transport.NewEndpoint(s.server.URL + base)
+	ep, err := transport.NewEndpoint(s.server.URL + base)
+	if err != nil {
+		return err
+	}
 	service := server.NewServer(server.MapLoader{ep.String(): store})
 	if strings.HasSuffix(r.URL.Path, "/info/refs") {
 		name := r.URL.Query().Get("service")
 		var adv *packp.AdvRefs
-		var err error
 		if name == "git-upload-pack" {
-			session, _ := service.NewUploadPackSession(ep, nil)
+			session, sessionErr := service.NewUploadPackSession(ep, nil)
+			if sessionErr != nil {
+				return sessionErr
+			}
 			adv, err = session.AdvertisedReferencesContext(r.Context())
-			_ = adv.Capabilities.Set(capability.Sideband64k)
+			if err == nil {
+				err = adv.Capabilities.Set(capability.Sideband64k)
+			}
 		} else {
-			session, _ := service.NewReceivePackSession(ep, nil)
+			session, sessionErr := service.NewReceivePackSession(ep, nil)
+			if sessionErr != nil {
+				return sessionErr
+			}
 			adv, err = session.AdvertisedReferencesContext(r.Context())
 		}
 		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
+			return err
 		}
 		adv.Prefix = [][]byte{[]byte("# service=" + name + "\n"), pktline.Flush}
 		w.Header().Set("Content-Type", "application/x-"+name+"-advertisement")
-		if err := adv.Encode(w); err != nil {
-			s.t.Error(err)
-		}
-		return
+		return adv.Encode(w)
 	}
 	if strings.HasSuffix(r.URL.Path, "/git-upload-pack") {
 		s.uploads++
 		req := packp.NewUploadPackRequest()
-		if err := req.UploadRequest.Decode(r.Body); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
+		if err := req.Decode(r.Body); err != nil {
+			return err
 		}
 		scan := pktline.NewScanner(r.Body)
 		for scan.Scan() {
@@ -135,36 +145,46 @@ func (s *relayTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		useSideband := req.Capabilities.Supports(capability.Sideband64k)
 		req.Capabilities.Delete(capability.Sideband64k)
-		up, _ := service.NewUploadPackSession(ep, nil)
+		up, err := service.NewUploadPackSession(ep, nil)
+		if err != nil {
+			return err
+		}
 		response, err := up.UploadPack(r.Context(), req)
 		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
+			return err
 		}
-		defer response.Close()
+		defer func() {
+			if err := response.Close(); err != nil {
+				s.t.Error(err)
+			}
+		}()
 		w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
-		_ = pktline.NewEncoder(w).EncodeString("NAK\n")
+		if err := pktline.NewEncoder(w).EncodeString("NAK\n"); err != nil {
+			return err
+		}
 		if useSideband {
 			mux := sideband.NewMuxer(sideband.Sideband64k, w)
-			_, _ = mux.WriteChannel(sideband.ProgressMessage, []byte("generating pack\n"))
-			if s.failSource {
-				_, _ = mux.WriteChannel(sideband.ErrorMessage, []byte("injected source failure"))
-			} else {
-				_, _ = io.Copy(mux, response)
+			if _, err := mux.WriteChannel(sideband.ProgressMessage, []byte("generating pack\n")); err != nil {
+				return err
 			}
-			_ = pktline.NewEncoder(w).Flush()
-		} else {
-			_, _ = io.Copy(w, response)
+			if s.failSource {
+				_, err = mux.WriteChannel(sideband.ErrorMessage, []byte("injected source failure"))
+			} else {
+				_, err = io.Copy(mux, response)
+			}
+			if err != nil {
+				return err
+			}
+			return pktline.NewEncoder(w).Flush()
 		}
-		return
+		_, err = io.Copy(w, response)
+		return err
 	}
 	if strings.HasSuffix(r.URL.Path, "/git-receive-pack") {
 		s.pushes++
-		s.chunked = len(r.TransferEncoding) == 1 && r.TransferEncoding[0] == "chunked"
 		req := packp.NewReferenceUpdateRequest()
 		if err := req.Decode(r.Body); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
+			return err
 		}
 		if s.beforePush != nil {
 			s.beforePush()
@@ -179,10 +199,11 @@ func (s *relayTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 				old = ref.Hash()
 			}
 			if old != command.Old {
-				_, _ = io.Copy(io.Discard, r.Body)
+				if _, err := io.Copy(io.Discard, r.Body); err != nil {
+					return err
+				}
 				w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
-				_ = (&packp.ReportStatus{UnpackStatus: "ok", CommandStatuses: []*packp.CommandStatus{{ReferenceName: command.Name, Status: "stale old object ID"}}}).Encode(w)
-				return
+				return (&packp.ReportStatus{UnpackStatus: "ok", CommandStatuses: []*packp.CommandStatus{{ReferenceName: command.Name, Status: "stale old object ID"}}}).Encode(w)
 			}
 		}
 		allDelete := true
@@ -190,44 +211,61 @@ func (s *relayTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			allDelete = allDelete && command.Action() == packp.Delete
 		}
 		if allDelete {
-			data, _ := io.ReadAll(r.Body)
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				return err
+			}
 			if len(data) != 0 {
 				s.t.Error("delete-only request included pack data")
 			}
 			req.Packfile = nil
 		}
-		down, _ := service.NewReceivePackSession(ep, nil)
+		down, err := service.NewReceivePackSession(ep, nil)
+		if err != nil {
+			return err
+		}
 		var report *packp.ReportStatus
 		if s.skipUpdate {
-			_, _ = io.Copy(io.Discard, r.Body)
+			if _, err := io.Copy(io.Discard, r.Body); err != nil {
+				return err
+			}
 			report = &packp.ReportStatus{UnpackStatus: "ok"}
 			for _, command := range req.Commands {
 				report.CommandStatuses = append(report.CommandStatuses, &packp.CommandStatus{ReferenceName: command.Name, Status: "ok"})
 			}
 		} else {
-			report, _ = down.ReceivePack(r.Context(), req)
+			report, err = down.ReceivePack(r.Context(), req)
+			if err != nil {
+				return err
+			}
 		}
 		if report == nil {
-			http.Error(w, "missing report", 500)
-			return
+			return errors.New("missing report")
 		}
 		if s.omitStatus && len(report.CommandStatuses) > 0 {
 			report.CommandStatuses = report.CommandStatuses[:len(report.CommandStatuses)-1]
 		}
 		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
-		_ = report.Encode(w)
-		return
+		return report.Encode(w)
 	}
 	http.NotFound(w, r)
+	return nil
 }
 
 func relayTestCommit(t *testing.T, store *memory.Storage, content string, parents ...plumbing.Hash) plumbing.Hash {
 	t.Helper()
 	blob := store.NewEncodedObject()
 	blob.SetType(plumbing.BlobObject)
-	w, _ := blob.Writer()
-	_, _ = io.WriteString(w, content)
-	_ = w.Close()
+	w, err := blob.Writer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(w, content); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 	blobHash, err := store.SetEncodedObject(blob)
 	if err != nil {
 		t.Fatal(err)
@@ -266,13 +304,15 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	first := relayTestCommit(t, s.source, "first mail")
 	relayTestSetRef(t, s.source, "refs/heads/master", first)
 	relayTestSetRef(t, s.source, "refs/meta/origins", first)
-	_ = s.source.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.Master))
+	if err := s.source.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.Master)); err != nil {
+		t.Fatal(err)
+	}
 	result, err := s.sync(t, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Changed || result.DefaultBranch != "master" || result.Bytes == 0 || !s.chunked {
-		t.Fatalf("unexpected initial result: %+v, chunked=%v", result, s.chunked)
+	if !result.Changed || result.DefaultBranch != "master" {
+		t.Fatalf("unexpected initial result: %+v", result)
 	}
 	if _, err := s.destination.EncodedObject(plumbing.CommitObject, first); err != nil {
 		t.Fatalf("destination lacks commit: %v", err)
@@ -297,7 +337,9 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 		t.Fatalf("ref-only sync: %v, uploads=%d", err, s.uploads)
 	}
 	// Deleted source metadata is removed; GitHub's own refs remain untouched.
-	_ = s.source.RemoveReference("refs/meta/origins")
+	if err := s.source.RemoveReference("refs/meta/origins"); err != nil {
+		t.Fatal(err)
+	}
 	relayTestSetRef(t, s.destination, "refs/pull/1/head", first)
 	_, err = s.sync(t, 0)
 	if err != nil {
@@ -316,19 +358,36 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	}
 }
 
-func TestRelayRejectsOversizedPushAndCanRetry(t *testing.T) {
-	s := newRelayTestServer(t)
-	hash := relayTestCommit(t, s.source, "mail")
-	relayTestSetRef(t, s.source, "refs/heads/master", hash)
-	result, err := s.sync(t, 180)
-	if !errors.Is(err, ErrPushTooLarge) || result.Bytes > 180 {
-		t.Fatalf("expected bounded overflow, got %+v %v", result, err)
-	}
-	if _, err := s.destination.Reference(plumbing.Master); err != plumbing.ErrReferenceNotFound {
-		t.Fatal("truncated push published a ref")
-	}
-	if _, err := s.sync(t, 0); err != nil {
-		t.Fatalf("retry after interrupted transfer: %v", err)
+func TestRelayLimitsWholeRequestsAndRetriesWithoutPublishingPartialRefs(t *testing.T) {
+	for _, mode := range []string{"pack truncated", "command overhead"} {
+		t.Run(mode, func(t *testing.T) {
+			s := newRelayTestServer(t)
+			hash := relayTestCommit(t, s.source, "mail")
+			name, limit := plumbing.Master, int64(180)
+			relayTestSetRef(t, s.source, string(name), hash)
+			if mode == "command overhead" {
+				if _, err := s.sync(t, 0); err != nil {
+					t.Fatal(err)
+				}
+				name, limit = "refs/tags/existing", 32 // The empty pack fits; update commands do not.
+				relayTestSetRef(t, s.source, string(name), hash)
+			}
+			failed, err := s.sync(t, limit)
+			if !errors.Is(err, ErrPushTooLarge) || failed.Bytes != limit {
+				t.Fatalf("bounded request: %+v %v", failed, err)
+			}
+			if _, err := s.destination.Reference(name); !errors.Is(err, plumbing.ErrReferenceNotFound) {
+				t.Fatalf("partial request published %s: %v", name, err)
+			}
+			succeeded, err := s.sync(t, 0)
+			if err != nil || !succeeded.Changed || succeeded.Bytes <= limit {
+				t.Fatalf("retry: %+v %v", succeeded, err)
+			}
+			ref, err := s.destination.Reference(name)
+			if err != nil || ref.Hash() != hash {
+				t.Fatalf("retry did not publish %s: %v", name, err)
+			}
+		})
 	}
 }
 
@@ -355,7 +414,10 @@ func TestRelaySourceFailureAndConcurrentDestinationChange(t *testing.T) {
 		if _, err := s.sync(t, 0); err == nil || !strings.Contains(err.Error(), "stale old object") {
 			t.Fatalf("concurrent update not rejected: %v", err)
 		}
-		ref, _ := s.destination.Reference(plumbing.Master)
+		ref, err := s.destination.Reference(plumbing.Master)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if ref.Hash() != other {
 			t.Fatal("concurrent ref overwritten")
 		}
@@ -383,90 +445,179 @@ func TestRelayRejectsUnsafeEndpointsAndRedirects(t *testing.T) {
 			t.Errorf("accepted %q", endpoint)
 		}
 	}
-	var hit bool
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+	var hit atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit.Store(true) }))
 	defer target.Close()
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
 	}))
 	defer origin.Close()
 	client := (&Relay{}).httpClient()
-	request, _ := http.NewRequest(http.MethodGet, origin.URL, nil)
+	request, err := http.NewRequest(http.MethodGet, origin.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	request.SetBasicAuth("x-access-token", "secret")
-	if _, err := client.Do(request); err == nil || hit {
+	if _, err := client.Do(request); err == nil || hit.Load() {
 		t.Fatal("credential-bearing redirect followed")
 	}
 }
 
-func TestRelayPushSizeLimitIncludesCommands(t *testing.T) {
-	var output bytes.Buffer
-	writer := relayLimitedWriter{w: &output, limit: 3}
-	if n, err := writer.Write([]byte("abcd")); n != 3 || !errors.Is(err, ErrPushTooLarge) || output.String() != "abc" {
-		t.Fatal(fmt.Sprintf("size limit: n=%d err=%v data=%q", n, err, output.String()))
+func testUpdate(t *testing.T, pack io.ReadCloser) *packp.ReferenceUpdateRequest {
+	t.Helper()
+	update := packp.NewReferenceUpdateRequest()
+	if err := update.Capabilities.Set(capability.ReportStatus); err != nil {
+		t.Fatal(err)
 	}
+	update.Commands = []*packp.Command{{Name: plumbing.Master, New: plumbing.NewHash(strings.Repeat("1", 40))}}
+	update.Packfile = pack
+	return update
 }
 
-func TestReceivePackStreamsBeforeReadingWholePack(t *testing.T) {
-	bodyStarted := make(chan struct{})
+func TestReceivePackForwardsPrefixBeforeSourceTailExists(t *testing.T) {
+	prefixReceived := make(chan struct{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	pack := relayEmptyPack()
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req := packp.NewReferenceUpdateRequest()
 		if err := req.Decode(r.Body); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		close(bodyStarted)
-		pack, err := io.ReadAll(req.Packfile)
-		if err != nil || !bytes.Equal(pack, relayEmptyPack()) {
-			t.Errorf("received pack %x, error %v", pack, err)
+		prefix := make([]byte, 12)
+		if _, err := io.ReadFull(req.Packfile, prefix); err != nil {
+			t.Error(err)
+			return
+		}
+		if !bytes.Equal(prefix, pack[:12]) {
+			t.Errorf("received prefix %x, want %x", prefix, pack[:12])
+		}
+		close(prefixReceived)
+		tail, err := io.ReadAll(req.Packfile)
+		if err != nil || !bytes.Equal(tail, pack[12:]) {
+			t.Errorf("received tail %x, error %v", tail, err)
 		}
 		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
-		_ = (&packp.ReportStatus{UnpackStatus: "ok", CommandStatuses: []*packp.CommandStatus{{ReferenceName: plumbing.Master, Status: "ok"}}}).Encode(w)
+		if err := (&packp.ReportStatus{UnpackStatus: "ok", CommandStatuses: []*packp.CommandStatus{{ReferenceName: plumbing.Master, Status: "ok"}}}).Encode(w); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer receiver.Close()
 	packReader, packWriter := io.Pipe()
 	producerDone := make(chan struct{})
 	go func() {
 		defer close(producerDone)
-		select {
-		case <-bodyStarted:
-			_, err := packWriter.Write(relayEmptyPack())
-			packWriter.CloseWithError(err)
-		case <-ctx.Done():
-			packWriter.CloseWithError(ctx.Err())
+		_, err := packWriter.Write(pack[:12])
+		if err == nil {
+			select {
+			case <-prefixReceived:
+				_, err = packWriter.Write(pack[12:])
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
+		}
+		if closeErr := packWriter.CloseWithError(err); closeErr != nil {
+			t.Error(closeErr)
 		}
 	}()
-	update := packp.NewReferenceUpdateRequest()
-	_ = update.Capabilities.Set(capability.ReportStatus)
-	update.Commands = []*packp.Command{{Name: plumbing.Master, New: plumbing.NewHash(strings.Repeat("1", 40))}}
-	update.Packfile = packReader
-	if _, err := relayReceivePack(ctx, receiver.Client(), receiver.URL, "test-token", update, 4096, nil, nil); err != nil {
+	if _, err := relayReceivePack(ctx, receiver.Client(), receiver.URL, "test-token", testUpdate(t, packReader), 4096, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	<-producerDone
 }
 
-func TestReceivePackEarlyRejectionClosesSourceAndRedactsToken(t *testing.T) {
+// A source that has entered Read but cannot produce bytes until closed.
+type blockedPack struct {
+	started, closed     chan struct{}
+	readOnce, closeOnce sync.Once
+}
+
+func newBlockedPack() *blockedPack {
+	return &blockedPack{started: make(chan struct{}), closed: make(chan struct{})}
+}
+func (p *blockedPack) Read([]byte) (int, error) {
+	p.readOnce.Do(func() { close(p.started) })
+	<-p.closed
+	return 0, io.ErrClosedPipe
+}
+func (p *blockedPack) Close() error { p.closeOnce.Do(func() { close(p.closed) }); return nil }
+
+func TestReceivePackEarlyRejectionClosesBlockedSourceAndRedactsToken(t *testing.T) {
+	pack := newBlockedPack()
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-pack.started
 		w.Header().Set("Connection", "close")
 		http.Error(w, "rejected test-token", http.StatusForbidden)
 		w.(http.Flusher).Flush()
 	}))
 	defer receiver.Close()
-	packReader, packWriter := io.Pipe()
-	defer packWriter.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	update := packp.NewReferenceUpdateRequest()
-	_ = update.Capabilities.Set(capability.ReportStatus)
-	update.Commands = []*packp.Command{{Name: plumbing.Master, New: plumbing.NewHash(strings.Repeat("1", 40))}}
-	update.Packfile = packReader // Never produces data; the rejection must unblock it.
-	_, err := relayReceivePack(ctx, receiver.Client(), receiver.URL, "test-token", update, 4096, nil, nil)
+	_, err := relayReceivePack(ctx, receiver.Client(), receiver.URL, "test-token", testUpdate(t, pack), 4096, nil, nil)
 	if err == nil || strings.Contains(err.Error(), "test-token") || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ctx.Err() != nil {
 		t.Fatal("early rejection waited for the job timeout")
+	}
+	select {
+	case <-pack.closed:
+	default:
+		t.Fatal("source was not closed")
+	}
+}
+
+func TestReceivePackCancellationStopsBlockedTransfer(t *testing.T) {
+	pack := newBlockedPack()
+	headersReceived := make(chan struct{})
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		update := packp.NewReferenceUpdateRequest()
+		if err := update.Decode(r.Body); err != nil {
+			t.Error(err)
+			return
+		}
+		close(headersReceived)
+		if _, err := io.Copy(io.Discard, update.Packfile); err != nil {
+			return
+		}
+	}))
+	defer receiver.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	update := testUpdate(t, pack)
+	done := make(chan error, 1)
+	go func() {
+		_, err := relayReceivePack(ctx, receiver.Client(), receiver.URL, "test-token", update, 4096, nil, nil)
+		done <- err
+	}()
+	defer func() { _ = pack.Close() }()
+	for _, started := range []<-chan struct{}{pack.started, headersReceived} {
+		select {
+		case <-started:
+		case err := <-done:
+			t.Fatalf("transfer ended before cancellation: %v", err)
+		case <-ctx.Done():
+			t.Fatal("transfer did not start")
+		}
+	}
+	cancel()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("cancellation did not unblock the active transfer")
+		if closeErr := pack.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+		err = <-done
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("live transfer cancellation: %v", err)
+	}
+	select {
+	case <-pack.closed:
+	default:
+		t.Fatal("cancellation left the source blocked")
 	}
 }

@@ -49,7 +49,7 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("healthcheck: %w", err)
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		if response.StatusCode != http.StatusOK {
 			return fmt.Errorf("healthcheck: HTTP %d", response.StatusCode)
 		}

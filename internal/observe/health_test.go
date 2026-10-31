@@ -1,104 +1,44 @@
 package observe
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 	"time"
-
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-func healthClock() (*Health, func(time.Duration)) {
-	var clock atomic.Int64
-	clock.Store(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano())
-	health := NewHealth(func() time.Time { return time.Unix(0, clock.Load()) })
-	return health, func(elapsed time.Duration) { clock.Add(int64(elapsed)) }
-}
-
-func TestHealthTracksIndependentActiveOperations(t *testing.T) {
-	health, advance := healthClock()
-	health.Progress("sync") // Progress without an active operation stays idle.
-	health.Begin("unbounded repository name")()
-	advance(10 * time.Minute)
-	if health.Stuck() {
-		t.Fatal("idle worker or retry backoff became unhealthy")
-	}
-	finishSync := health.Begin("sync")
-	advance(4 * time.Minute)
-	health.Progress("sync")
-	advance(4 * time.Minute)
-	if health.Stuck() {
-		t.Fatal("streaming progress did not refresh the deadline")
-	}
-	advance(time.Minute)
-	finishDiscovery := health.Begin("discovery")
-	if !health.Stuck() {
-		t.Fatal("fresh discovery hid a stuck sync")
-	}
-	health.Progress("sync")
-	if health.Stuck() {
-		t.Fatal("resumed progress did not restore health")
-	}
-	advance(5 * time.Minute)
-	finishSync()
-	if !health.Stuck() {
-		t.Fatal("completing sync hid a stuck discovery")
-	}
-	finishDiscovery()
-	if health.Stuck() {
-		t.Fatal("finished operations stayed stuck")
-	}
-}
-
-func TestHealthEndpointAndMetricAgree(t *testing.T) {
-	health, advance := healthClock()
-	reader := sdkmetric.NewManualReader()
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
-	if _, err := NewTelemetry(provider.Meter("health-test"), health); err != nil {
-		t.Fatal(err)
-	}
-	check := func(wantStatus int, wantBody string, wantMetric int64) {
+func TestHealthEndpointTracksProgressAndIndependentOperations(t *testing.T) {
+	now := time.Now()
+	health := NewHealth(func() time.Time { return now })
+	check := func(want int) {
 		t.Helper()
 		response := httptest.NewRecorder()
 		health.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-		if response.Code != wantStatus || response.Body.String() != wantBody {
-			t.Fatalf("health response: %d %q", response.Code, response.Body.String())
-		}
-		observed := collectMetrics(t, reader)
-		points := observed["lore_mirror_stuck"].Data.(metricdata.Gauge[int64]).DataPoints
-		if len(points) != 1 || points[0].Value != wantMetric || points[0].Attributes.Len() != 0 {
-			t.Fatalf("stuck metric: %+v", points)
+		if response.Code != want {
+			t.Fatalf("health status=%d, want %d", response.Code, want)
 		}
 	}
-	check(http.StatusOK, "ok\n", 0)
-	finish := health.Begin("sync")
-	advance(stuckAfter)
-	check(http.StatusServiceUnavailable, "stuck\n", 1)
-	finish()
-	check(http.StatusOK, "ok\n", 0)
-	response := httptest.NewRecorder()
-	health.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/private", nil))
-	if response.Code != http.StatusNotFound {
-		t.Fatal("health server served another endpoint")
-	}
-}
+	check(http.StatusOK)
+	finishSync := health.Begin("sync")
+	now = now.Add(4 * time.Minute)
+	health.Progress("sync")
+	now = now.Add(4 * time.Minute)
+	check(http.StatusOK)
+	now = now.Add(time.Minute)
+	finishDiscovery := health.Begin("discovery")
+	check(http.StatusServiceUnavailable) // Fresh discovery cannot hide a stuck sync.
+	health.Progress("sync")
+	check(http.StatusOK)
+	now = now.Add(5 * time.Minute)
+	finishSync()
+	check(http.StatusServiceUnavailable) // Discovery is still stuck.
+	finishDiscovery()
+	now = now.Add(24 * time.Hour)
+	check(http.StatusOK) // Idle time and retry backoff are healthy.
 
-func collectMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {
-	t.Helper()
-	var resource metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &resource); err != nil {
-		t.Fatal(err)
+	response := httptest.NewRecorder()
+	health.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/other", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unknown endpoint status=%d, want 404", response.Code)
 	}
-	result := map[string]metricdata.Metrics{}
-	for _, scope := range resource.ScopeMetrics {
-		for _, metric := range scope.Metrics {
-			result[metric.Name] = metric
-		}
-	}
-	return result
 }

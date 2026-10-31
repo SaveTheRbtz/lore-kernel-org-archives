@@ -50,7 +50,7 @@ func FetchManifest(ctx context.Context, client *http.Client, sourceURL string) (
 	if err != nil {
 		return nil, fmt.Errorf("fetch manifest: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch manifest: HTTP %s", resp.Status)
 	}
@@ -62,7 +62,7 @@ func FetchManifest(ctx context.Context, client *http.Client, sourceURL string) (
 	if err != nil {
 		return nil, fmt.Errorf("open gzip manifest: %w", err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	expanded, err := readManifestBytes(zr, maxManifestExpanded)
 	if err != nil {
 		return nil, fmt.Errorf("expand manifest: %w", err)

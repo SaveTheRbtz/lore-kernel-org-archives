@@ -167,7 +167,7 @@ func githubRequest(ctx context.Context, client *http.Client, base string, allowH
 	}
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
-		(u.Scheme != "https" && !(allowHTTP && u.Scheme == "http")) {
+		(u.Scheme != "https" && (u.Scheme != "http" || !allowHTTP)) {
 		return errors.New("GitHub API base must be an HTTPS URL without credentials, query, or fragment")
 	}
 	if token == "" {
@@ -204,7 +204,7 @@ func githubRequest(ctx context.Context, client *http.Client, base string, allowH
 	if err != nil {
 		return fmt.Errorf("GitHub %s %s: %w", method, path, err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	const maxResponseBytes = 2 << 20
 	data, err := io.ReadAll(io.LimitReader(res.Body, maxResponseBytes+1))
 	if err != nil {

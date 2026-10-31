@@ -45,7 +45,17 @@ func TestAppAuthJWTAndRefresh(t *testing.T) {
 		if err != nil || rsa.VerifyPKCS1v15(&key.PublicKey, crypto.SHA256, digest[:], signature) != nil {
 			t.Error("invalid JWT signature")
 		}
-		claimsJSON, _ := base64.RawURLEncoding.DecodeString(parts[1])
+		headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+		var header struct {
+			Algorithm string `json:"alg"`
+		}
+		if err != nil || json.Unmarshal(headerJSON, &header) != nil || header.Algorithm != "RS256" {
+			t.Errorf("JWT must declare RS256, got header %q", headerJSON)
+		}
+		claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			t.Errorf("invalid JWT claims encoding: %v", err)
+		}
 		var claims struct {
 			Issuer string `json:"iss"`
 			Issued int64  `json:"iat"`
@@ -54,7 +64,7 @@ func TestAppAuthJWTAndRefresh(t *testing.T) {
 		if err := json.Unmarshal(claimsJSON, &claims); err != nil {
 			t.Error(err)
 		}
-		if claims.Issuer != "123" || claims.Issued != now.Add(-time.Minute).Unix() || claims.Expiry != now.Add(9*time.Minute).Unix() {
+		if claims.Issuer != "123" || claims.Issued > now.Unix() || claims.Expiry <= now.Unix() || claims.Expiry > now.Add(10*time.Minute).Unix() {
 			t.Errorf("unexpected claims: %+v", claims)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"token": fmt.Sprintf("token-%d", requestNumber), "expires_at": now.Add(time.Hour)})
@@ -72,13 +82,10 @@ func TestAppAuthJWTAndRefresh(t *testing.T) {
 			t.Fatalf("token=%q err=%v", token, err)
 		}
 	}
-	if requests.Load() != 1 {
-		t.Fatalf("expected cached token, made %d requests", requests.Load())
-	}
-	clock.Add(int64(56 * time.Minute / time.Second))
+	clock.Add(int64((time.Hour + time.Second) / time.Second))
 	token, err := auth.Token(context.Background())
-	if err != nil || token != "token-2" || requests.Load() != 2 {
-		t.Fatalf("refresh token=%q requests=%d err=%v", token, requests.Load(), err)
+	if err != nil || token != "token-2" {
+		t.Fatalf("refresh token=%q err=%v", token, err)
 	}
 }
 

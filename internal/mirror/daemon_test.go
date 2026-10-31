@@ -5,179 +5,245 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"lore-mirror/internal/lore"
+	"lore-mirror/internal/observe"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func TestReconcileKeepsFailuresAndDropsOnlyLocalWork(t *testing.T) {
-	entry := lore.ManifestEntry{Fingerprint: "a", Modified: 1}
-	queue := map[string]*work{}
-	reconcile(queue, lore.Manifest{"/x/git/0.git": entry})
-	retry := time.Now().Add(time.Hour)
-	queue["/x/git/0.git"].failures = 2
-	queue["/x/git/0.git"].next = retry
-	reconcile(queue, lore.Manifest{"/x/git/0.git": entry})
-	item := queue["/x/git/0.git"]
-	if item.done || item.failures != 2 || !item.next.Equal(retry) {
-		t.Fatal("unchanged manifest lost failed work or its backoff")
-	}
-	entry.Fingerprint = "b"
-	reconcile(queue, lore.Manifest{"/x/git/0.git": entry})
-	if queue["/x/git/0.git"].done || queue["/x/git/0.git"].failures != 2 || !queue["/x/git/0.git"].next.Equal(retry) {
-		t.Fatal("changed source erased the retry deadline")
-	}
-	reconcile(queue, lore.Manifest{"/y/git/0.git": entry})
-	if _, exists := queue["/x/git/0.git"]; exists {
-		t.Fatal("removed source still queued")
+func startDaemon(t *testing.T, d *daemon) context.CancelFunc {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- d.run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Errorf("shutdown: %v, want context.Canceled", err)
+		}
+	})
+	return cancel
+}
+
+func TestRetryDeadlinesSurviveDiscoveryAndRescans(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		err                 error
+		before, after, poll time.Duration
+	}{
+		{"transient", errors.New("temporary failure"), 59 * time.Second, 8 * time.Second, 10 * time.Second},
+		{"oversized", ErrPushTooLarge, 23 * time.Hour, time.Hour + time.Second, time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				attempts := make(chan time.Time, 16)
+				d := daemon{
+					fetch: func(context.Context) (lore.Manifest, error) {
+						return lore.Manifest{"/a/git/0.git": {Modified: time.Now().UnixNano()}}, nil
+					},
+					sync: func(ctx context.Context, _ string, _ lore.ManifestEntry) error {
+						select {
+						case attempts <- time.Now():
+							return tc.err
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+					},
+					log: testLogger(), poll: tc.poll, rescan: tc.poll, timeout: time.Hour,
+				}
+				startDaemon(t, &d)
+				synctest.Wait()
+				time.Sleep(tc.before)
+				synctest.Wait()
+				if len(attempts) != 1 {
+					t.Fatalf("attempts before retry deadline=%d, want 1", len(attempts))
+				}
+				time.Sleep(tc.after)
+				synctest.Wait()
+				if len(attempts) != 2 {
+					t.Fatalf("attempts after retry deadline=%d, want 2", len(attempts))
+				}
+			})
+		})
 	}
 }
 
-func TestHotInboxDoesNotStarveBackfill(t *testing.T) {
-	now := time.Now()
-	queue := map[string]*work{
-		"hot":  {entry: lore.ManifestEntry{Modified: 100}, attempted: now.Add(-time.Minute)},
-		"cold": {entry: lore.ManifestEntry{Modified: 1}},
-	}
-	path, _ := nextWork(queue, now, now.Add(time.Hour))
-	if path != "cold" {
-		t.Fatalf("backfill starved by %q", path)
-	}
+func TestRateLimitPausesOtherRepositories(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		attempted := make(chan string, 16)
+		d := daemon{
+			fetch: func(context.Context) (lore.Manifest, error) { return lore.Manifest{"/a": {Modified: 2}, "/b": {}}, nil },
+			sync: func(ctx context.Context, path string, _ lore.ManifestEntry) error {
+				select {
+				case attempted <- path:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				if path == "/a" {
+					return delayedError{}
+				}
+				return nil
+			},
+			log: testLogger(), poll: time.Hour, rescan: time.Hour, timeout: time.Hour,
+		}
+		startDaemon(t, &d)
+		time.Sleep(2 * time.Hour)
+		synctest.Wait()
+		if got := drainWork(attempted); !reflect.DeepEqual(got, []string{"/a"}) {
+			t.Fatalf("rate limit allowed other work: %v", got)
+		}
+		time.Sleep(time.Hour + time.Second)
+		synctest.Wait()
+		if got := drainWork(attempted); len(got) == 0 || got[0] != "/b" {
+			t.Fatalf("backfill did not resume first: %v", got)
+		}
+	})
 }
 
-func TestRateLimitStopsOtherRepositoriesAndSurvivesRescan(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Millisecond)
-	defer cancel()
-	var attempts atomic.Int64
-	d := daemon{
-		fetch: func(context.Context) (lore.Manifest, error) {
-			return lore.Manifest{"/a/git/0.git": {Modified: time.Now().UnixNano()}, "/b/git/0.git": {}}, nil
-		},
-		sync: func(context.Context, string, lore.ManifestEntry) error { attempts.Add(1); return delayedError{} },
-		log:  testLogger(), poll: 5 * time.Millisecond, rescan: 10 * time.Millisecond, timeout: time.Second,
-	}
-	_ = d.run(ctx)
-	if attempts.Load() != 1 {
-		t.Fatalf("rate limit ignored across discovery/rescan: %d attempts", attempts.Load())
-	}
+func TestDiscoveryContinuesDuringSyncWithoutStarvingBackfill(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var polls atomic.Int64
+		release := make(chan struct{})
+		attempted := make(chan string, 16)
+		d := daemon{
+			fetch: func(context.Context) (lore.Manifest, error) {
+				poll := polls.Add(1)
+				if poll > 2 {
+					return nil, errors.New("discovery unavailable")
+				}
+				return lore.Manifest{"/hot": {Modified: poll}, "/cold": {}}, nil
+			},
+			sync: func(ctx context.Context, path string, entry lore.ManifestEntry) error {
+				select {
+				case attempted <- path:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				if path == "/hot" && entry.Modified == 1 {
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				return nil
+			},
+			log: testLogger(), poll: time.Hour, rescan: 24 * time.Hour, timeout: 24 * time.Hour,
+		}
+		startDaemon(t, &d)
+		time.Sleep(3 * time.Hour)
+		synctest.Wait()
+		if got := drainWork(attempted); polls.Load() < 3 || !reflect.DeepEqual(got, []string{"/hot"}) {
+			t.Fatalf("discovery blocked behind sync: polls=%d work=%v", polls.Load(), got)
+		}
+		close(release)
+		synctest.Wait()
+		if got := drainWork(attempted); !reflect.DeepEqual(got, []string{"/cold", "/hot"}) {
+			t.Fatalf("lost update, inventory, or backfill fairness: %v", got)
+		}
+	})
+}
+
+func TestRemovedArchivesAreNotRetried(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var polls atomic.Int64
+		attempted := make(chan string, 16)
+		d := daemon{
+			fetch: func(context.Context) (lore.Manifest, error) {
+				if polls.Add(1) == 1 {
+					return lore.Manifest{"/removed": {}}, nil
+				}
+				return lore.Manifest{"/remaining": {}}, nil
+			},
+			sync: func(ctx context.Context, path string, _ lore.ManifestEntry) error {
+				select {
+				case attempted <- path:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				if path == "/removed" {
+					return errors.New("temporary failure")
+				}
+				return nil
+			},
+			log: testLogger(), poll: 10 * time.Second, rescan: time.Hour, timeout: time.Hour,
+		}
+		startDaemon(t, &d)
+		time.Sleep(2 * time.Minute)
+		synctest.Wait()
+		if got := drainWork(attempted); !reflect.DeepEqual(got, []string{"/removed", "/remaining"}) {
+			t.Fatalf("removed archive retried: %v", got)
+		}
+	})
 }
 
 func TestRunOnceContinuesPastFailure(t *testing.T) {
 	var attempted []string
 	d := daemon{
-		fetch: func(context.Context) (lore.Manifest, error) {
-			return lore.Manifest{"/a/git/0.git": {Modified: 2}, "/b/git/0.git": {Modified: 1}}, nil
-		},
+		fetch: func(context.Context) (lore.Manifest, error) { return lore.Manifest{"/a": {Modified: 2}, "/b": {}}, nil },
 		sync: func(_ context.Context, path string, _ lore.ManifestEntry) error {
 			attempted = append(attempted, path)
-			if path == "/a/git/0.git" {
+			if path == "/a" {
 				return errors.New("failed")
 			}
 			return nil
 		},
-		log: testLogger(), timeout: time.Second,
+		log: testLogger(), timeout: time.Minute,
 	}
 	if err := d.runOnce(context.Background()); err == nil {
-		t.Fatal("failure was not reported")
+		t.Fatal("failed sync was not reported")
 	}
-	if len(attempted) != 2 || attempted[1] != "/b/git/0.git" {
-		t.Fatalf("attempts: %v", attempted)
+	if !reflect.DeepEqual(attempted, []string{"/a", "/b"}) {
+		t.Fatalf("remaining work skipped: %v", attempted)
 	}
 }
 
-func TestDiscoveryContinuesDuringSyncAndDoesNotLoseChanges(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	var polls atomic.Int64
-	first := make(chan struct{})
-	changed := make(chan struct{})
-	release := make(chan struct{})
-	synced := make(chan string, 4)
-	d := daemon{
-		fetch: func(context.Context) (lore.Manifest, error) {
-			n := polls.Add(1)
-			fingerprint := "old"
-			if n > 1 {
-				fingerprint = "new"
-			}
-			if n == 2 {
-				close(changed)
-			}
-			return lore.Manifest{"/x/git/0.git": {Fingerprint: fingerprint, Modified: n}}, nil
-		},
-		sync: func(ctx context.Context, _ string, entry lore.ManifestEntry) error {
-			if entry.Fingerprint == "old" {
-				close(first)
+func TestHealthReportsBlockedWorkAndRecoversAfterCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		health := observe.NewHealth(time.Now)
+		release := make(chan struct{})
+		d := daemon{
+			fetch: func(ctx context.Context) (lore.Manifest, error) {
 				select {
 				case <-release:
+					return lore.Manifest{"/a": {}}, nil
 				case <-ctx.Done():
-					return ctx.Err()
+					return nil, ctx.Err()
 				}
-			}
-			select {
-			case synced <- entry.Fingerprint:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			return nil
-		},
-		log: testLogger(), poll: 20 * time.Millisecond, rescan: time.Hour, timeout: time.Second,
-	}
-	done := make(chan error, 1)
-	go func() { done <- d.run(ctx) }()
-	select {
-	case <-first:
-	case <-ctx.Done():
-		t.Fatal("first sync did not start")
-	}
-	select {
-	case <-changed:
-	case <-ctx.Done():
-		t.Fatal("discovery blocked behind sync")
-	}
-	close(release)
-	for _, want := range []string{"old", "new"} {
-		select {
-		case got := <-synced:
-			if got != want {
-				t.Fatalf("got %s, want %s", got, want)
-			}
-		case <-ctx.Done():
-			t.Fatal("lost source update")
+			},
+			sync: func(ctx context.Context, _ string, _ lore.ManifestEntry) error { <-ctx.Done(); return ctx.Err() },
+			log:  testLogger(), health: health, poll: 24 * time.Hour, rescan: 24 * time.Hour, timeout: 24 * time.Hour,
 		}
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("shutdown: %v", err)
+		check := func(want int) {
+			t.Helper()
+			response := httptest.NewRecorder()
+			health.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			if response.Code != want {
+				t.Fatalf("health status=%d, want %d", response.Code, want)
+			}
 		}
-	case <-time.After(time.Second):
-		t.Fatal("daemon did not stop")
-	}
-}
-
-func TestNextWorkRespectsBackoffAndPrioritizesFreshEntries(t *testing.T) {
-	now := time.Now()
-	queue := map[string]*work{
-		"/busy/git/0.git":  {entry: lore.ManifestEntry{Modified: 30}, next: now.Add(time.Minute)},
-		"/fresh/git/0.git": {entry: lore.ManifestEntry{Modified: 20}},
-		"/old/git/0.git":   {entry: lore.ManifestEntry{Modified: 10}},
-	}
-	path, _ := nextWork(queue, now, now.Add(time.Hour))
-	if path != "/fresh/git/0.git" {
-		t.Fatalf("selected %s", path)
-	}
-	queue[path].done = true
-	queue["/old/git/0.git"].done = true
-	path, wake := nextWork(queue, now, now.Add(time.Hour))
-	if path != "" || !wake.Equal(now.Add(time.Minute)) {
-		t.Fatalf("backoff ignored: %q %v", path, wake)
-	}
+		cancel := startDaemon(t, &d)
+		time.Sleep(5 * time.Minute)
+		synctest.Wait()
+		check(http.StatusServiceUnavailable)
+		close(release)
+		synctest.Wait()
+		check(http.StatusOK)
+		time.Sleep(5 * time.Minute)
+		synctest.Wait()
+		check(http.StatusServiceUnavailable)
+		cancel()
+		synctest.Wait()
+		check(http.StatusOK)
+	})
 }
 
 type delayedError struct{}
@@ -185,11 +251,14 @@ type delayedError struct{}
 func (delayedError) Error() string             { return "rate limit" }
 func (delayedError) RetryAfter() time.Duration { return 3 * time.Hour }
 
-func TestRetryDelayHonorsRateLimitAndOversize(t *testing.T) {
-	if got := retryDelay(delayedError{}, 1); got != 3*time.Hour {
-		t.Fatalf("Retry-After ignored: %v", got)
-	}
-	if got := retryDelay(ErrPushTooLarge, 1); got < 24*time.Hour {
-		t.Fatalf("oversized transfer retries too soon: %v", got)
+func drainWork(events <-chan string) []string {
+	var paths []string
+	for {
+		select {
+		case path := <-events:
+			paths = append(paths, path)
+		default:
+			return paths
+		}
 	}
 }

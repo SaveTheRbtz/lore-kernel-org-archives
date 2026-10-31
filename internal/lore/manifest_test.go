@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"maps"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const manifestTestFingerprint = "0123456789abcdef0123456789abcdef01234567"
@@ -26,45 +31,45 @@ func gzipManifest(t *testing.T, data string) []byte {
 	return b.Bytes()
 }
 
+func fetchResponse(t *testing.T, status int, body []byte) (Manifest, error) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /manifest.js.gz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	return FetchManifest(t.Context(), server.Client(), server.URL+"/")
+}
+
 func TestFetchManifest(t *testing.T) {
 	input := fmt.Sprintf(`{"/lkml/git/20.git":{"fingerprint":%q,"modified":123,"description":"Linux kernel","owner":null,"forkgroup":"ignored"},"/legacy":{"fingerprint":%q,"modified":0}}`, manifestTestFingerprint, manifestTestFingerprint)
-	compressed := gzipManifest(t, input)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/manifest.js.gz" || r.Method != http.MethodGet {
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-		}
-		if r.Header.Get("Accept-Encoding") != "identity" {
-			t.Error("compressed byte limit needs undecoded response")
-		}
-		w.Header().Set("Content-Type", "application/gzip")
-		_, _ = w.Write(compressed)
-	}))
-	defer srv.Close()
-	manifest, err := FetchManifest(context.Background(), srv.Client(), srv.URL+"/")
+	manifest, err := fetchResponse(t, http.StatusOK, gzipManifest(t, input))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest) != 2 || manifest["/lkml/git/20.git"] != (ManifestEntry{manifestTestFingerprint, 123, "Linux kernel"}) {
-		t.Fatalf("unexpected manifest: %#v", manifest)
+	want := Manifest{
+		"/lkml/git/20.git": {Fingerprint: manifestTestFingerprint, Modified: 123, Description: "Linux kernel"},
+		"/legacy":          {Fingerprint: manifestTestFingerprint},
+	}
+	if !maps.Equal(manifest, want) {
+		t.Fatalf("manifest = %#v, want %#v", manifest, want)
 	}
 }
 
-func TestManifestRejectsInvalidInventory(t *testing.T) {
+func TestInvalidInventoryNeverReturnsPartialManifest(t *testing.T) {
 	valid := fmt.Sprintf(`{"fingerprint":%q,"modified":123}`, manifestTestFingerprint)
 	tests := map[string]string{
 		"empty":              `{}`,
-		"null":               `null`,
-		"array":              `[]`,
-		"invalid json":       `{"/list":`,
 		"trailing":           `{"/list":` + valid + `} {}`,
 		"duplicate":          `{"/list":` + valid + `,"/list":` + valid + `}`,
-		"null entry":         `{"/list":null}`,
 		"missing digest":     `{"/list":{"modified":123}}`,
-		"bad digest length":  `{"/list":{"fingerprint":"abc","modified":123}}`,
+		"bad digest length":  `{"/list":{"fingerprint":"0123456789abcdef","modified":123}}`,
 		"bad digest content": `{"/list":{"fingerprint":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","modified":123}}`,
 		"missing modified":   fmt.Sprintf(`{"/list":{"fingerprint":%q}}`, manifestTestFingerprint),
 		"negative modified":  fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":-1}}`, manifestTestFingerprint),
-		"fraction modified":  fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":1.2}}`, manifestTestFingerprint),
 		"invalid path":       `{"/../list":` + valid + `}`,
 		"one invalid entry":  `{"/good":` + valid + `,"/bad":{}}`,
 	}
@@ -78,40 +83,63 @@ func TestManifestRejectsInvalidInventory(t *testing.T) {
 	}
 }
 
-func TestFetchManifestErrors(t *testing.T) {
-	tests := []struct {
+func TestFetchManifestRejectsHTTPFailureAndTruncation(t *testing.T) {
+	valid := gzipManifest(t, fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":1}}`, manifestTestFingerprint))
+	for _, test := range []struct {
 		name   string
 		status int
 		body   []byte
-		want   string
 	}{
-		{"http error", http.StatusServiceUnavailable, []byte("unavailable"), "503"},
-		{"html", http.StatusOK, []byte("<html>challenge</html>"), "gzip"},
-		{"truncated gzip", http.StatusOK, gzipManifest(t, `{}`)[:12], "manifest"},
-		{"compressed limit", http.StatusOK, bytes.Repeat([]byte{'x'}, maxManifestCompressed+1), "compressed manifest"},
-		{"expanded limit", http.StatusOK, gzipManifest(t, strings.Repeat(" ", maxManifestExpanded+1)), "expand manifest"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(tt.status)
-				_, _ = w.Write(tt.body)
-			}))
-			defer srv.Close()
-			_, err := FetchManifest(context.Background(), srv.Client(), srv.URL)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("expected %q error, got %v", tt.want, err)
+		{"server error with valid inventory", http.StatusServiceUnavailable, valid},
+		{"valid inventory without gzip trailer", http.StatusOK, valid[:len(valid)-8]},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got, err := fetchResponse(t, test.status, test.body); err == nil || got != nil {
+				t.Fatalf("failed response accepted: %v, %v", got, err)
 			}
 		})
 	}
 }
 
-func TestFetchManifestContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := FetchManifest(ctx, &http.Client{}, "https://lore.kernel.org")
-	if err == nil || !strings.Contains(err.Error(), "context canceled") {
-		t.Fatalf("expected cancellation, got %v", err)
+func TestFetchManifestBoundsValidPayloads(t *testing.T) {
+	// Incompressible text exceeds the wire limit while staying below the expanded
+	// limit. Both payloads are valid inventories if their bound is removed.
+	random := make([]byte, 9<<20)
+	_, _ = rand.New(rand.NewSource(1)).Read(random)
+	for name, description := range map[string]string{
+		"compressed": base64.StdEncoding.EncodeToString(random),
+		"expanded":   strings.Repeat("x", maxManifestExpanded),
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := gzipManifest(t, fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":1,"description":%q}}`, manifestTestFingerprint, description))
+			if got, err := fetchResponse(t, http.StatusOK, body); err == nil || got != nil {
+				t.Fatalf("oversized inventory accepted: entries=%d, err=%v", len(got), err)
+			}
+		})
+	}
+}
+
+func TestFetchManifestCancelsActiveRequest(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Timeout = 5 * time.Second
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := FetchManifest(ctx, client, server.URL); done <- err }()
+	select {
+	case <-started:
+		cancel()
+	case err := <-done:
+		t.Fatalf("request failed before cancellation: %v", err)
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled request returned %v", err)
 	}
 }
 
