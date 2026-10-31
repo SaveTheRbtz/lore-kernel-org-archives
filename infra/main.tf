@@ -216,7 +216,6 @@ resource "google_compute_instance_template" "mirror" {
   disk {
     source_image = "projects/cos-cloud/global/images/cos-stable-121-18867-652-7"
     disk_size_gb = 20
-    disk_type    = "pd-standard"
   }
   network_interface {
     subnetwork = google_compute_subnetwork.mirror.id
