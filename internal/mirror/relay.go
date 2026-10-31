@@ -295,10 +295,8 @@ func relayCommands(source, destination map[string]plumbing.Hash) []*packp.Comman
 
 func relayDefaultBranch(adv *packp.AdvRefs, refs map[string]plumbing.Hash) string {
 	for _, symref := range adv.Capabilities.Get(capability.SymRef) {
-		if target, ok := strings.CutPrefix(symref, "HEAD:"); ok && strings.HasPrefix(target, "refs/heads/") {
-			if _, exists := refs[target]; exists {
-				return strings.TrimPrefix(target, "refs/heads/")
-			}
+		if branch, ok := strings.CutPrefix(symref, "HEAD:refs/heads/"); ok && refs["refs/heads/"+branch] != plumbing.ZeroHash {
+			return branch
 		}
 	}
 	return ""
