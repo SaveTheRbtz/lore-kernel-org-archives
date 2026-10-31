@@ -36,11 +36,11 @@ func startDaemon(t *testing.T, d *daemon) context.CancelFunc {
 
 func TestNextRunSurvivesDiscovery(t *testing.T) {
 	for _, tc := range []struct {
-		name                string
-		err                 error
-		before, after, poll time.Duration
+		name                   string
+		err                    error
+		before, after, recheck time.Duration
 	}{
-		{"recheck", nil, 10*time.Minute - time.Second, time.Minute + time.Second, 10 * time.Second},
+		{"recheck", nil, 10*time.Minute - time.Second, time.Minute + time.Second, 10 * time.Minute},
 		{"transient", errors.New("temporary failure"), 59 * time.Second, 8 * time.Second, 10 * time.Second},
 		{"oversized", ErrPushTooLarge, 23 * time.Hour, time.Hour + time.Second, time.Hour},
 	} {
@@ -63,7 +63,7 @@ func TestNextRunSurvivesDiscovery(t *testing.T) {
 							return ctx.Err()
 						}
 					},
-					log: testLogger(), poll: tc.poll, recheck: 10 * time.Minute, timeout: time.Hour,
+					log: testLogger(), recheck: tc.recheck, timeout: time.Hour,
 				}
 				startDaemon(t, &d)
 				<-attempts
@@ -89,8 +89,14 @@ func TestRateLimitBackoffAcrossRepositories(t *testing.T) {
 			at   time.Time
 		}
 		attempted := make(chan attempt)
+		first := true
 		d := daemon{
-			fetch: func(context.Context) (lore.Manifest, error) {
+			fetch: func(ctx context.Context) (lore.Manifest, error) {
+				if !first {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+				first = false
 				return lore.Manifest{"/a": {}, "/b": {}, "/c": {}, "/d": {}, "/e": {}, "/f": {}}, nil
 			},
 			sync: func(ctx context.Context, path string, _ lore.ManifestEntry) error {
@@ -111,7 +117,7 @@ func TestRateLimitBackoffAcrossRepositories(t *testing.T) {
 					return delayedError(time.Minute)
 				}
 			},
-			log: testLogger(), poll: time.Minute, recheck: time.Nanosecond, timeout: time.Hour,
+			log: testLogger(), recheck: time.Nanosecond, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
 		var previous time.Time
@@ -134,15 +140,18 @@ func TestRateLimitBackoffAcrossRepositories(t *testing.T) {
 func TestPendingUpdatesWhileSyncIsBlocked(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var pending atomic.Int64
-		var updated atomic.Bool
 		var attempts atomic.Int64
 		started := make(chan struct{})
+		manifests := make(chan lore.Manifest, 1)
+		manifests <- lore.Manifest{"/a": {}, "/b": {}}
 		d := daemon{
-			fetch: func(context.Context) (lore.Manifest, error) {
-				if updated.Load() {
-					return lore.Manifest{"/b": {}, "/c": {}, "/d": {}}, nil
+			fetch: func(ctx context.Context) (lore.Manifest, error) {
+				select {
+				case manifest := <-manifests:
+					return manifest, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
 				}
-				return lore.Manifest{"/a": {}, "/b": {}}, nil
 			},
 			sync: func(ctx context.Context, path string, _ lore.ManifestEntry) error {
 				attempts.Add(1)
@@ -153,7 +162,7 @@ func TestPendingUpdatesWhileSyncIsBlocked(t *testing.T) {
 				<-ctx.Done()
 				return ctx.Err()
 			},
-			queue: pending.Store, log: testLogger(), poll: time.Minute, recheck: time.Nanosecond, timeout: time.Hour,
+			queue: pending.Store, log: testLogger(), recheck: time.Nanosecond, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
 		<-started
@@ -166,8 +175,7 @@ func TestPendingUpdatesWhileSyncIsBlocked(t *testing.T) {
 		if got := pending.Load(); got != 1 {
 			t.Fatalf("repository becoming due during sync: pending=%d, want 1", got)
 		}
-		updated.Store(true)
-		time.Sleep(66 * time.Second)
+		manifests <- lore.Manifest{"/b": {}, "/c": {}, "/d": {}}
 		synctest.Wait()
 		if got := pending.Load(); got != 2 || attempts.Load() != 2 {
 			t.Fatalf("reconciled pending=%d, attempts=%d; want 2 pending behind one blocked sync", got, attempts.Load())
@@ -205,12 +213,12 @@ func TestDiscoveryContinuesDuringSyncWithoutStarvingBackfill(t *testing.T) {
 				}
 				return nil
 			},
-			log: testLogger(), poll: time.Hour, recheck: 10 * time.Minute, timeout: 24 * time.Hour,
+			log: testLogger(), recheck: 10 * time.Minute, timeout: 24 * time.Hour,
 		}
 		startDaemon(t, &d)
 		<-started
 		drainWork(attempted) // Either archive can win its independent initial delay.
-		time.Sleep(3 * time.Hour)
+		time.Sleep(3 * d.recheck)
 		synctest.Wait()
 		if got := drainWork(attempted); polls.Load() < 3 || len(got) != 0 {
 			t.Fatalf("discovery blocked behind sync: polls=%d work=%v", polls.Load(), got)
@@ -250,7 +258,7 @@ func TestRemovedArchivesAreNotRetried(t *testing.T) {
 				}
 				return nil
 			},
-			log: testLogger(), poll: 10 * time.Second, recheck: 10 * time.Minute, timeout: time.Hour,
+			log: testLogger(), recheck: 10 * time.Second, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
 		for _, want := range []string{"/removed", "/remaining"} {
@@ -260,7 +268,7 @@ func TestRemovedArchivesAreNotRetried(t *testing.T) {
 		}
 		time.Sleep(2 * time.Minute)
 		synctest.Wait()
-		if got := drainWork(attempted); len(got) != 0 {
+		if got := drainWork(attempted); slices.Contains(got, "/removed") {
 			t.Fatalf("removed archive retried: %v", got)
 		}
 	})
@@ -306,7 +314,7 @@ func TestHealthReportsBlockedWorkAndRecoversAfterCancellation(t *testing.T) {
 				<-ctx.Done()
 				return ctx.Err()
 			},
-			log: testLogger(), health: health, poll: 24 * time.Hour, recheck: 10 * time.Minute, timeout: 24 * time.Hour,
+			log: testLogger(), health: health, recheck: 10 * time.Minute, timeout: 24 * time.Hour,
 		}
 		check := func(want bool) {
 			t.Helper()

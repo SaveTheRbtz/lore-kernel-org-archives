@@ -15,10 +15,10 @@ import (
 )
 
 type Config struct {
-	Org, Lists             string
-	Discover, Once         bool
-	Poll, Recheck, Timeout time.Duration
-	MaxPushBytes           int64
+	Org, Lists       string
+	Discover, Once   bool
+	Recheck, Timeout time.Duration
+	MaxPushBytes     int64
 }
 
 func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
@@ -108,7 +108,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 			"changed", result.Changed, "refs", len(result.SourceRefs), "bytes", result.Bytes)
 		return nil
 	}
-	daemon := daemon{fetch: fetch, sync: syncRepo, log: log, metrics: metrics, queue: metrics.Queue, health: health, poll: cfg.Poll, recheck: cfg.Recheck, timeout: cfg.Timeout}
+	daemon := daemon{fetch: fetch, sync: syncRepo, log: log, metrics: metrics, queue: metrics.Queue, health: health, recheck: cfg.Recheck, timeout: cfg.Timeout}
 	shutdownHealth, healthFailures, err := observe.StartHealthServer(health)
 	if err != nil {
 		return fmt.Errorf("start health server: %w", err)
@@ -142,8 +142,8 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 }
 
 func (c Config) validate() error {
-	if c.Poll <= 0 || c.Recheck <= 0 || c.Timeout <= 0 {
-		return errors.New("poll, recheck, and timeout must be positive")
+	if c.Recheck <= 0 || c.Timeout <= 0 {
+		return errors.New("recheck and timeout must be positive")
 	}
 	if c.MaxPushBytes <= 0 || c.MaxPushBytes >= 2*(1<<30) {
 		return errors.New("max-push-bytes must be positive and less than 2 GiB")

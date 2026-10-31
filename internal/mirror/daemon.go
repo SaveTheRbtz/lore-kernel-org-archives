@@ -13,13 +13,13 @@ import (
 )
 
 type daemon struct {
-	fetch                  func(context.Context) (lore.Manifest, error)
-	sync                   func(context.Context, string, lore.ManifestEntry) error
-	log                    *slog.Logger
-	metrics                *observe.Telemetry
-	queue                  func(int64)
-	health                 *observe.Health
-	poll, recheck, timeout time.Duration
+	fetch            func(context.Context) (lore.Manifest, error)
+	sync             func(context.Context, string, lore.ManifestEntry) error
+	log              *slog.Logger
+	metrics          *observe.Telemetry
+	queue            func(int64)
+	health           *observe.Health
+	recheck, timeout time.Duration
 }
 
 type work struct {
@@ -50,7 +50,7 @@ func (d *daemon) pollManifests(ctx context.Context, updates chan lore.Manifest) 
 				return
 			}
 		}
-		timer := time.NewTimer(jitter(d.poll))
+		timer := time.NewTimer(jitter(d.recheck))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
