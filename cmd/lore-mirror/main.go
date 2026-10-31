@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
@@ -23,10 +24,7 @@ func main() {
 
 func run(log *slog.Logger) error {
 	var cfg mirror.Config
-	org := os.Getenv("GITHUB_ORG")
-	if org == "" {
-		org = "lore-kernel-org-archives"
-	}
+	org := cmp.Or(os.Getenv("GITHUB_ORG"), "lore-kernel-org-archives")
 	flag.StringVar(&cfg.Org, "org", org, "dedicated GitHub organization (or GITHUB_ORG)")
 	flag.StringVar(&cfg.Lists, "lists", "", "comma-separated inboxes to mirror; empty means all")
 	flag.BoolVar(&cfg.Discover, "discover", false, "print inventory and exit without contacting GitHub")
