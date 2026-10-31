@@ -39,15 +39,16 @@ func readAppSecret(ctx context.Context) (githubAppSecret, error) {
 }
 
 func decodeAppSecret(payload *secretmanagerpb.SecretPayload) (githubAppSecret, error) {
-	if payload == nil || len(payload.Data) == 0 || len(payload.Data) > 64<<10 {
+	data := payload.GetData()
+	if len(data) == 0 || len(data) > 64<<10 {
 		return githubAppSecret{}, errors.New("invalid payload from Secret Manager")
 	}
-	checksum := int64(crc32.Checksum(payload.Data, crc32.MakeTable(crc32.Castagnoli)))
+	checksum := int64(crc32.Checksum(data, crc32.MakeTable(crc32.Castagnoli)))
 	if payload.DataCrc32C == nil || *payload.DataCrc32C != checksum {
 		return githubAppSecret{}, errors.New("checksum mismatch in Secret Manager payload")
 	}
 	var secret githubAppSecret
-	if json.Unmarshal(payload.Data, &secret) != nil || secret.AppID <= 0 || secret.InstallationID <= 0 || secret.PrivateKey == "" {
+	if json.Unmarshal(data, &secret) != nil || secret.AppID <= 0 || secret.InstallationID <= 0 || secret.PrivateKey == "" {
 		return githubAppSecret{}, errors.New("GitHub App secret requires positive app_id (string), positive installation_id, and private_key (PEM string)")
 	}
 	return secret, nil
