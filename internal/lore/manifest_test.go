@@ -62,8 +62,12 @@ func TestInvalidInventoryNeverReturnsPartialManifest(t *testing.T) {
 	valid := fmt.Sprintf(`{"fingerprint":%q,"modified":123}`, manifestTestFingerprint)
 	tests := map[string]string{
 		"empty":              `{}`,
+		"null":               `null`,
+		"array":              `[]`,
+		"null entry":         `{"/list":null}`,
 		"trailing":           `{"/list":` + valid + `} {}`,
 		"duplicate":          `{"/list":` + valid + `,"/list":` + valid + `}`,
+		"duplicate field":    fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":1,"modified":2}}`, manifestTestFingerprint),
 		"missing digest":     `{"/list":{"modified":123}}`,
 		"bad digest length":  `{"/list":{"fingerprint":"0123456789abcdef","modified":123}}`,
 		"bad digest content": `{"/list":{"fingerprint":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","modified":123}}`,

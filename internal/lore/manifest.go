@@ -5,7 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -74,34 +74,21 @@ func readManifestBytes(r io.Reader, limit int64) ([]byte, error) {
 }
 
 func decodeManifest(b []byte) (Manifest, error) {
-	d := json.NewDecoder(bytes.NewReader(b))
-	start, err := d.Token()
-	if err != nil || start != json.Delim('{') {
-		return nil, fmt.Errorf("manifest must be a JSON object")
+	var raw map[string]struct {
+		Fingerprint *string `json:"fingerprint"`
+		Modified    *int64  `json:"modified"`
+		Description string  `json:"description"`
 	}
-	manifest := make(Manifest)
-	for d.More() {
-		key, err := d.Token()
-		if err != nil {
-			return nil, fmt.Errorf("read manifest key: %w", err)
-		}
-		path, ok := key.(string)
-		if !ok {
-			return nil, fmt.Errorf("manifest repository key is not a string")
-		}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, fmt.Errorf("decode manifest: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("manifest is empty")
+	}
+	manifest := make(Manifest, len(raw))
+	for path, entry := range raw {
 		if _, err := RepositoryName(path); err != nil {
 			return nil, fmt.Errorf("manifest repository: %w", err)
-		}
-		if _, exists := manifest[path]; exists {
-			return nil, fmt.Errorf("duplicate manifest repository %q", path)
-		}
-		var entry struct {
-			Fingerprint *string `json:"fingerprint"`
-			Modified    *int64  `json:"modified"`
-			Description string  `json:"description"`
-		}
-		if err := d.Decode(&entry); err != nil {
-			return nil, fmt.Errorf("decode manifest entry %q: %w", path, err)
 		}
 		if entry.Fingerprint == nil || len(*entry.Fingerprint) != 40 {
 			return nil, fmt.Errorf("manifest entry %q has no valid fingerprint", path)
@@ -113,16 +100,6 @@ func decodeManifest(b []byte) (Manifest, error) {
 			return nil, fmt.Errorf("manifest entry %q has no valid modified timestamp", path)
 		}
 		manifest[path] = ManifestEntry{*entry.Fingerprint, *entry.Modified, entry.Description}
-	}
-	if _, err := d.Token(); err != nil {
-		return nil, fmt.Errorf("close manifest object: %w", err)
-	}
-	var extra any
-	if err := d.Decode(&extra); err != io.EOF {
-		return nil, fmt.Errorf("manifest contains trailing JSON or invalid data")
-	}
-	if len(manifest) == 0 {
-		return nil, fmt.Errorf("manifest is empty")
 	}
 	return manifest, nil
 }
