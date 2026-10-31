@@ -99,7 +99,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		health.Progress("sync")
 		result, err := relay.Sync(ctx, lore.Origin+sourcePath, repo.GitURL, credential)
 		if err != nil {
-			return err
+			return fmt.Errorf("sync attempt failed after %s, request_bytes=%d: %w", time.Since(started).Round(time.Millisecond), result.Bytes, err)
 		}
 		if result.DefaultBranch != "" && repo.DefaultBranch != result.DefaultBranch {
 			if err := github.SetDefaultBranch(ctx, repo.Name, result.DefaultBranch); err != nil {

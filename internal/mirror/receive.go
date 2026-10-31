@@ -2,6 +2,7 @@ package mirror
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -77,11 +78,13 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	if receiveErr == nil {
 		if response.StatusCode != http.StatusOK {
 			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-			text := strings.TrimSpace(string(message))
+			text := fmt.Sprintf("receive-pack HTTP %d (protocol=%s, request_id=%s): %s",
+				response.StatusCode, response.Proto, response.Header.Get("X-GitHub-Request-Id"), strings.TrimSpace(string(message)))
 			if token != "" {
 				text = strings.ReplaceAll(text, token, "[redacted]")
+				text = strings.ReplaceAll(text, base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token)), "[redacted]")
 			}
-			receiveErr = fmt.Errorf("receive-pack HTTP %d: %s", response.StatusCode, text)
+			receiveErr = errors.New(text)
 		} else if contentType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type")); contentType != "application/x-git-receive-pack-result" {
 			receiveErr = fmt.Errorf("unexpected receive-pack content type %q", contentType)
 		} else {

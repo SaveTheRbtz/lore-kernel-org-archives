@@ -363,14 +363,16 @@ func TestReceivePackEarlyRejectionClosesBlockedSourceAndRedactsToken(t *testing.
 		receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			<-pack.started
 			w.Header().Set("Connection", "close")
-			http.Error(w, "rejected test-token", http.StatusForbidden)
+			w.Header().Set("X-GitHub-Request-Id", "failed-push-id")
+			http.Error(w, "rejected test-token eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg==", http.StatusForbidden)
 			w.(http.Flusher).Flush()
 		}))
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 		relay := Relay{Client: relayTestClient(receiver), MaxPushBytes: 4096}
 		_, err := relay.receivePack(ctx, "https://example.com", "test-token", testUpdate(t, pack))
-		if err == nil || strings.Contains(err.Error(), "test-token") || !strings.Contains(err.Error(), "403") {
+		if err == nil || strings.Contains(err.Error(), "test-token") || strings.Contains(err.Error(), "eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg==") ||
+			!strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "request_id=failed-push-id") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if ctx.Err() != nil {
