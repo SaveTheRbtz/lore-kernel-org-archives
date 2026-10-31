@@ -1,12 +1,9 @@
 package lore
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
-	"maps"
 	"regexp"
-	"slices"
 	"strings"
 )
 
@@ -28,13 +25,4 @@ func ParseLists(lists string) (map[string]bool, error) {
 		names[name] = true
 	}
 	return names, nil
-}
-
-func OrderedPaths(manifest Manifest) []string {
-	return slices.SortedFunc(maps.Keys(manifest), func(a, b string) int {
-		if order := cmp.Compare(manifest[b].Modified, manifest[a].Modified); order != 0 {
-			return order
-		}
-		return cmp.Compare(a, b)
-	})
 }

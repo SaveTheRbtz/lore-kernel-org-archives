@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -132,10 +134,13 @@ func writeInventory(w io.Writer, manifest lore.Manifest) error {
 		lore.ManifestEntry
 	}
 	items := make([]item, 0, len(manifest))
-	for _, p := range lore.OrderedPaths(manifest) {
+	for p, entry := range manifest {
 		name, _ := lore.RepositoryName(p)
-		items = append(items, item{p, name, manifest[p]})
+		items = append(items, item{p, name, entry})
 	}
+	slices.SortFunc(items, func(a, b item) int {
+		return cmp.Or(cmp.Compare(b.Modified, a.Modified), cmp.Compare(a.Source, b.Source))
+	})
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(items)

@@ -1,11 +1,14 @@
 package mirror
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -58,5 +61,29 @@ func TestRepositorySummaryPropagatesThrottleAndCancellation(t *testing.T) {
 	_, err = repositorySummary(ctx, server.Client(), testLogger(), "/list/git/0.git", lore.ManifestEntry{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled lookup = %v, want context.Canceled", err)
+	}
+}
+
+func TestWriteInventoryOrder(t *testing.T) {
+	var b bytes.Buffer
+	if err := writeInventory(&b, nil); err != nil || b.String() != "[]\n" {
+		t.Fatalf("empty inventory %q: %v", b.String(), err)
+	}
+	b.Reset()
+	if err := writeInventory(&b, lore.Manifest{
+		"/z/git/0.git": {Modified: 100}, "/a/git/0.git": {Modified: 100}, "/b/git/0.git": {Modified: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var rows []struct{ Source, Repository string }
+	if err := json.Unmarshal(b.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, row := range rows {
+		names = append(names, row.Repository)
+	}
+	if !slices.Equal(names, []string{"a.0", "z.0", "b.0"}) {
+		t.Fatalf("repository order = %v", names)
 	}
 }
