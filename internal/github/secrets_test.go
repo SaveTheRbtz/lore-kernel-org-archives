@@ -16,7 +16,7 @@ func TestDecodeAppSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := githubAppSecret{AppID: 123, InstallationID: 456, PrivateKey: "very-secret-key"}
+	want := appSecret{AppID: 123, InstallationID: 456, PrivateKey: "very-secret-key"}
 	if got != want {
 		t.Fatal("decoded credentials differ from the stored GitHub App credentials")
 	}
@@ -43,7 +43,7 @@ func TestDecodeAppSecretRejectsInvalidPayload(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := decodeAppSecret(tt.payload)
-			if err == nil || got != (githubAppSecret{}) {
+			if err == nil || got != (appSecret{}) {
 				t.Fatal("invalid credentials accepted or partially returned")
 			}
 			if strings.Contains(err.Error(), "very-secret-key") {
