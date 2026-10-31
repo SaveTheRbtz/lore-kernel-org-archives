@@ -64,7 +64,7 @@ func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 		remote.Description = sdk.Ptr(body.Description)
 		_ = json.NewEncoder(w).Encode(remote)
 	})
-	got, err := g.EnsureRepository(t.Context(), "/git/git/1.git", "Git development (1 out of 2)", 0)
+	got, err := g.EnsureRepository(t.Context(), "/git/git/1.git", "Git development <git@vger.kernel.org> (1 out of 2)", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 	}
 	select {
 	case got := <-created:
-		want := creation{Name: "git.1", Description: "Mirror of https://lore.kernel.org/git/git/1.git: Git development (1 out of 2)", Homepage: "https://lore.kernel.org/git/", Private: sdk.Ptr(false), AutoInit: sdk.Ptr(false)}
+		want := creation{Name: "git.1", Description: "Mirror of https://lore.kernel.org/git/git/1.git: Git development <git@vger.kernel.org> (1 out of 2)", Homepage: "https://lore.kernel.org/git/", Private: sdk.Ptr(false), AutoInit: sdk.Ptr(false)}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Fatalf("creation (-want +got):\n%s", diff)
 		}

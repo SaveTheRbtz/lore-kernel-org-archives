@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 const (
@@ -24,9 +23,27 @@ type ManifestEntry struct {
 	Fingerprint string `json:"fingerprint"`
 	Modified    int64  `json:"modified"`
 	Description string `json:"description"`
+	Epochs      int    `json:"epochs,omitempty"`
 }
 
 type Manifest map[string]ManifestEntry
+
+// Summary adds the posting address and the zero-based epoch's inventory count.
+func (e ManifestEntry) Summary(sourcePath, address string) string {
+	_, epoch, numeric := strings.Cut(sourcePath[1:], "/git/")
+	description := strings.TrimSpace(e.Description)
+	if numeric {
+		epoch = strings.TrimSuffix(epoch, ".git")
+		description = strings.TrimSpace(strings.TrimSuffix(description, "[epoch "+epoch+"]"))
+	}
+	if address != "" {
+		description += " <" + address + ">"
+	}
+	if numeric {
+		description += fmt.Sprintf(" (%s out of %d)", epoch, e.Epochs)
+	}
+	return strings.TrimSpace(description)
+}
 
 // FetchManifest retrieves one complete inventory. A bad entry invalidates the
 // entire response, so a partial inventory never replaces the last good one.
@@ -107,25 +124,16 @@ func decodeManifest(b []byte) (Manifest, error) {
 		if entry.Modified == nil || *entry.Modified < 0 {
 			return nil, fmt.Errorf("manifest entry %q has no valid modified timestamp", path)
 		}
-		manifest[path] = ManifestEntry{*entry.Fingerprint, *entry.Modified, entry.Description}
+		manifest[path] = ManifestEntry{Fingerprint: *entry.Fingerprint, Modified: *entry.Modified, Description: entry.Description}
 		if list, _, numeric := strings.Cut(path[1:], "/git/"); numeric {
 			epochs[list]++
 		}
 	}
 	for path, entry := range manifest {
-		list, epoch, numeric := strings.Cut(path[1:], "/git/")
-		if !numeric {
-			continue
+		if list, _, numeric := strings.Cut(path[1:], "/git/"); numeric {
+			entry.Epochs = epochs[list]
+			manifest[path] = entry
 		}
-		epoch = strings.TrimSuffix(epoch, ".git")
-		description := strings.TrimRightFunc(entry.Description, unicode.IsSpace)
-		description = strings.TrimSuffix(description, "[epoch "+epoch+"]")
-		description = strings.TrimRightFunc(description, unicode.IsSpace)
-		entry.Description = fmt.Sprintf("(%s out of %d)", epoch, epochs[list])
-		if description != "" {
-			entry.Description = description + " " + entry.Description
-		}
-		manifest[path] = entry
 	}
 	return manifest, nil
 }

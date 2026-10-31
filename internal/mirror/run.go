@@ -82,7 +82,11 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	repositories := map[string]gh.Repository{}
 	syncRepo := func(ctx context.Context, sourcePath string, entry lore.ManifestEntry) error {
 		started := time.Now()
-		repo, err := github.EnsureRepository(ctx, sourcePath, entry.Description, repositories[sourcePath].ID)
+		address, err := lore.FetchAddress(ctx, client, sourcePath)
+		if err != nil {
+			return err
+		}
+		repo, err := github.EnsureRepository(ctx, sourcePath, entry.Summary(sourcePath, address), repositories[sourcePath].ID)
 		if err != nil {
 			return err
 		}

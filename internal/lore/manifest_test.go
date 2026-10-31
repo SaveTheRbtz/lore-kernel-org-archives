@@ -57,11 +57,15 @@ func TestFetchManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for path, entry := range manifest {
+		entry.Description = entry.Summary(path, "list@example.org")
+		manifest[path] = entry
+	}
 	want := Manifest{
-		"/git/git/0.git":         {Fingerprint: manifestTestFingerprint, Modified: 1, Description: "Git development (0 out of 2)"},
-		"/git/git/20.git":        {Fingerprint: manifestTestFingerprint, Modified: 123, Description: "Git development [epoch 19] (20 out of 2)"},
-		"/linux-alpha/git/0.git": {Fingerprint: manifestTestFingerprint, Modified: 42, Description: "Alpha arch development list (0 out of 1)"},
-		"/legacy":                {Fingerprint: manifestTestFingerprint, Description: "Legacy [epoch 0]"},
+		"/git/git/0.git":         {Fingerprint: manifestTestFingerprint, Modified: 1, Description: "Git development <list@example.org> (0 out of 2)", Epochs: 2},
+		"/git/git/20.git":        {Fingerprint: manifestTestFingerprint, Modified: 123, Description: "Git development [epoch 19] <list@example.org> (20 out of 2)", Epochs: 2},
+		"/linux-alpha/git/0.git": {Fingerprint: manifestTestFingerprint, Modified: 42, Description: "Alpha arch development list <list@example.org> (0 out of 1)", Epochs: 1},
+		"/legacy":                {Fingerprint: manifestTestFingerprint, Description: "Legacy [epoch 0] <list@example.org>"},
 	}
 	if !maps.Equal(manifest, want) {
 		t.Fatalf("manifest = %#v, want %#v", manifest, want)
