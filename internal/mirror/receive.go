@@ -104,31 +104,7 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	var remote bytes.Buffer
 	response, receiveErr := r.Client.Do(request)
 	if receiveErr == nil {
-		if response.StatusCode != http.StatusOK {
-			message, readErr := io.ReadAll(io.LimitReader(response.Body, 4097))
-			if readErr != nil || len(message) > 4096 {
-				// A partial credential cannot be matched by the redactor.
-				message = []byte("[body omitted]")
-			}
-			receiveErr = fmt.Errorf("receive-pack HTTP %d (protocol=%s, request_id=%s): %s",
-				response.StatusCode, response.Proto, response.Header.Get("X-GitHub-Request-Id"), strings.TrimSpace(string(message)))
-		} else if contentType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type")); contentType != "application/x-git-receive-pack-result" {
-			receiveErr = fmt.Errorf("unexpected receive-pack content type %q", contentType)
-		} else {
-			body := io.LimitReader(response.Body, 1<<20)
-			if update.Capabilities.Supports(capability.Sideband64k) {
-				demux := sideband.NewDemuxer(sideband.Sideband64k, body)
-				demux.Progress = io.MultiWriter(relayProgress{r.health}, &remote)
-				body = demux
-			}
-			report := packp.NewReportStatus()
-			if err := report.Decode(body); err != nil {
-				receiveErr = fmt.Errorf("receive-pack status: %w", err)
-			} else {
-				receiveErr = relayCheckReport(report, update.Commands)
-			}
-		}
-		_ = response.Body.Close()
+		receiveErr = r.readReceivePackResponse(response, update, &remote)
 	}
 	// A receiver can reject a request before reading its body. Unblock both the
 	// pipe writer and a source HTTP read before joining the encoder goroutine.
@@ -155,6 +131,34 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 		message += "\nremote: " + detail
 	}
 	return limited.n, &redactedGitError{message: message, cause: cause}
+}
+
+func (r *Relay) readReceivePackResponse(response *http.Response, update *packp.ReferenceUpdateRequest, remote io.Writer) error {
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		message, readErr := io.ReadAll(io.LimitReader(response.Body, 4097))
+		if readErr != nil || len(message) > 4096 {
+			// A partial credential cannot be matched by the redactor.
+			message = []byte("[body omitted]")
+		}
+		return fmt.Errorf("receive-pack HTTP %d (protocol=%s, request_id=%s): %s",
+			response.StatusCode, response.Proto, response.Header.Get("X-GitHub-Request-Id"), strings.TrimSpace(string(message)))
+	}
+	contentType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if contentType != "application/x-git-receive-pack-result" {
+		return fmt.Errorf("unexpected receive-pack content type %q", contentType)
+	}
+	var body io.Reader = io.LimitReader(response.Body, 1<<20)
+	if update.Capabilities.Supports(capability.Sideband64k) {
+		demux := sideband.NewDemuxer(sideband.Sideband64k, body)
+		demux.Progress = io.MultiWriter(relayProgress{r.health}, remote)
+		body = demux
+	}
+	report := packp.NewReportStatus()
+	if err := report.Decode(body); err != nil {
+		return fmt.Errorf("receive-pack status: %w", err)
+	}
+	return relayCheckReport(report, update.Commands)
 }
 
 func relayCheckReport(report *packp.ReportStatus, commands []*packp.Command) error {
