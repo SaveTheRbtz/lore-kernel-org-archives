@@ -224,10 +224,11 @@ func nextWork(queue map[string]*work, now time.Time, active string) (chosen stri
 		if path == active {
 			continue
 		}
-		if item.failures > 0 || !item.next.After(now) {
+		future := item.next.After(now)
+		if item.failures > 0 || !future {
 			pending++
 		}
-		if item.next.After(now) {
+		if future {
 			if wake.IsZero() || item.next.Before(wake) {
 				wake = item.next
 			}
