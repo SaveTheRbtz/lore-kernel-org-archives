@@ -108,13 +108,7 @@ func newTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
 	receivedAttrs := metric.WithAttributes(attribute.String("direction", "receive"))
 	sentAttrs := metric.WithAttributes(attribute.String("direction", "send"))
 	_, err := meter.RegisterCallback(func(_ context.Context, observer metric.Observer) error {
-		t.mu.Lock()
-		elapsed, active := t.busyTime, int64(0)
-		if !t.active.IsZero() {
-			elapsed += time.Since(t.active)
-			active = 1
-		}
-		t.mu.Unlock()
+		active, elapsed := t.workerState()
 		observer.ObserveInt64(pending, t.pending.Load())
 		observer.ObserveInt64(busy, active)
 		unhealthy := int64(0)
@@ -159,6 +153,15 @@ func (t *Telemetry) Queue(pending int64) {
 	if t != nil {
 		t.pending.Store(pending)
 	}
+}
+
+func (t *Telemetry) workerState() (active int64, elapsed time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.active.IsZero() {
+		return 0, t.busyTime
+	}
+	return 1, t.busyTime + time.Since(t.active)
 }
 
 func (t *Telemetry) Busy(active bool) {
