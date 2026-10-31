@@ -156,15 +156,16 @@ func (d *daemon) runOnce(ctx context.Context) error {
 		}
 		d.queue(int64(len(manifest) - index - 1))
 		err := d.syncWork(ctx, path, manifest[path])
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
-			failed++
-			d.log.Error("sync_failed", "source", path, "error", err)
-			if pause := serverRetryAfter(err); pause > 0 {
-				return fmt.Errorf("rate limited: stop one-shot run and retry after %s: %w", pause, err)
-			}
+		if err == nil {
+			continue
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		failed++
+		d.log.Error("sync_failed", "source", path, "error", err)
+		if pause := serverRetryAfter(err); pause > 0 {
+			return fmt.Errorf("rate limited: stop one-shot run and retry after %s: %w", pause, err)
 		}
 	}
 	if failed != 0 {
