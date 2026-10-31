@@ -11,7 +11,6 @@ import (
 
 func newHTTPClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConnsPerHost = 4
 	transport.ResponseHeaderTimeout = time.Minute
 	return &http.Client{
 		Transport:     transport,
