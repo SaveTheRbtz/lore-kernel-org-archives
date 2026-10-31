@@ -190,15 +190,16 @@ func (t *Telemetry) workerState() (active int64, elapsed time.Duration) {
 	return 1, t.busyTime + time.Since(t.active)
 }
 
+// The single sync worker calls Busy(true) at the start and defers Busy(false).
 func (t *Telemetry) Busy(active bool) {
 	if t == nil {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if active && t.active.IsZero() {
+	if active {
 		t.active = time.Now()
-	} else if !active && !t.active.IsZero() {
+	} else {
 		t.busyTime += time.Since(t.active)
 		t.active = time.Time{}
 	}
