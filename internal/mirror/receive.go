@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	gitAuthUsername    = "x-access-token"
-	maxDiagnosticBytes = 4096
+	gitAuthUsername       = "x-access-token"
+	receivePackResultType = "application/x-git-receive-pack-result"
+	maxDiagnosticBytes    = 4096
 )
 
 type relayLimitedWriter struct {
@@ -109,7 +110,7 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	}
 	request.SetBasicAuth(gitAuthUsername, token)
 	request.Header.Set("Content-Type", "application/x-git-receive-pack-request")
-	request.Header.Set("Accept", "application/x-git-receive-pack-result")
+	request.Header.Set("Accept", receivePackResultType)
 	request.Header.Set("User-Agent", "lore-mirror")
 	if pack := update.Packfile; pack != nil {
 		update.Packfile = receivePackSource{Reader: pack, close: sync.OnceValue(pack.Close)}
@@ -161,7 +162,7 @@ func (r *Relay) readReceivePackResponse(response *http.Response, update *packp.R
 			response.StatusCode, response.Proto, response.Header.Get("X-GitHub-Request-Id"), strings.TrimSpace(string(message)))
 	}
 	contentType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if contentType != "application/x-git-receive-pack-result" {
+	if contentType != receivePackResultType {
 		return "", fmt.Errorf("unexpected receive-pack content type %q", contentType)
 	}
 	wire := &io.LimitedReader{R: response.Body, N: 1 << 20}
