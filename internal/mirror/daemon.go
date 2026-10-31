@@ -54,12 +54,10 @@ func (d *daemon) pollManifests(ctx context.Context, updates chan lore.Manifest) 
 			// This poller is the only sender, so the slot is available.
 			updates <- manifest
 		}
-		timer := time.NewTimer(jitter(d.recheck))
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return ctx.Err()
-		case <-timer.C:
+		case <-time.After(jitter(d.recheck)):
 		}
 	}
 }
@@ -104,11 +102,9 @@ func (d *daemon) run(ctx context.Context) error {
 		if cooldown.After(now) && (wake.IsZero() || cooldown.Before(wake)) {
 			wake = cooldown
 		}
-		var timer *time.Timer
 		var ready <-chan time.Time
 		if !wake.IsZero() {
-			timer = time.NewTimer(time.Until(wake))
-			ready = timer.C
+			ready = time.After(time.Until(wake))
 		}
 		select {
 		case <-ctx.Done():
@@ -139,9 +135,6 @@ func (d *daemon) run(ctx context.Context) error {
 			}
 			active, activePath = nil, ""
 		case <-ready:
-		}
-		if timer != nil {
-			timer.Stop()
 		}
 	}
 }
