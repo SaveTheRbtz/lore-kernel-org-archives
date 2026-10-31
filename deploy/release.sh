@@ -16,5 +16,5 @@ config = json.loads(path.read_text())
 config["image"] = sys.argv[1]
 path.write_text(json.dumps(config, indent=2) + "\n")
 PY
-bash deploy/apply.sh
+deploy/apply.sh
 printf 'Deployed %s\n' "$image"
