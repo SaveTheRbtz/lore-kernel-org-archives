@@ -206,13 +206,13 @@ func (t *Telemetry) Busy(active bool) {
 }
 
 func (t *Telemetry) BytesReceived(n int64) {
-	if t != nil && n > 0 {
+	if t != nil {
 		t.received.Add(n)
 	}
 }
 
 func (t *Telemetry) BytesSent(n int64) {
-	if t != nil && n > 0 {
+	if t != nil {
 		t.sent.Add(n)
 	}
 }
