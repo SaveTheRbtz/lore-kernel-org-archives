@@ -22,8 +22,10 @@ type Client struct {
 }
 
 type Repository struct {
-	Name   string
-	GitURL string
+	ID            int64
+	Name          string
+	GitURL        string
+	DefaultBranch string
 }
 
 func New(ctx context.Context, client *http.Client, org string) (*Client, error) {
@@ -65,7 +67,7 @@ func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // EnsureRepository only adopts repositories with the exact source homepage.
-func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description string) (Repository, error) {
+func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description string, expectedID int64) (Repository, error) {
 	name, err := lore.RepositoryName(sourcePath)
 	if err != nil {
 		return Repository{}, err
@@ -73,10 +75,13 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description s
 	sourceURL := lore.Origin + sourcePath
 	remote, response, err := g.api.Repositories.Get(ctx, g.org, name)
 	if err == nil {
-		return g.validateRepository(remote, name, sourceURL)
+		return g.validateRepository(remote, name, sourceURL, expectedID)
 	}
 	if response == nil || response.StatusCode != http.StatusNotFound {
 		return Repository{}, retryPolicy(err)
+	}
+	if expectedID != 0 {
+		return Repository{}, fmt.Errorf("refusing to recreate %s/%s: approved repository %d is missing", g.org, name, expectedID)
 	}
 	desc := "Mirror of " + sourceURL
 	if description != "" {
@@ -103,10 +108,13 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description s
 			return Repository{}, errors.Join(createErr, retryPolicy(err))
 		}
 	}
-	return g.validateRepository(remote, name, sourceURL)
+	return g.validateRepository(remote, name, sourceURL, expectedID)
 }
 
-func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL string) (Repository, error) {
+func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL string, expectedID int64) (Repository, error) {
+	if expectedID != 0 && remote.GetID() != expectedID {
+		return Repository{}, fmt.Errorf("refusing %s/%s: repository ID changed from %d to %d", g.org, name, expectedID, remote.GetID())
+	}
 	if remote.GetID() <= 0 || !strings.EqualFold(remote.GetName(), name) ||
 		!strings.EqualFold(remote.GetFullName(), g.org+"/"+name) || remote.GetHomepage() != sourceURL {
 		return Repository{}, fmt.Errorf("refusing to adopt %s/%s: source provenance does not match %s", g.org, name, sourceURL)
@@ -115,7 +123,10 @@ func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL stri
 		return Repository{}, fmt.Errorf("refusing %s: mirror repository must be public, writable, and not a fork", remote.GetFullName())
 	}
 	// Clone URLs returned by the API are never followed.
-	return Repository{Name: name, GitURL: "https://github.com/" + g.org + "/" + name + ".git"}, nil
+	return Repository{
+		ID: remote.GetID(), Name: name, GitURL: "https://github.com/" + g.org + "/" + name + ".git",
+		DefaultBranch: remote.GetDefaultBranch(),
+	}, nil
 }
 
 func (g *Client) SetDefaultBranch(ctx context.Context, repoName, branch string) error {

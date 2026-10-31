@@ -68,11 +68,11 @@ func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(stored)
 	})
 	for range 2 {
-		got, err := g.EnsureRepository(context.Background(), sourcePath, "LKML [epoch 20]")
+		got, err := g.EnsureRepository(context.Background(), sourcePath, "LKML [epoch 20]", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := Repository{Name: name, GitURL: "https://github.com/testorg/lkml.20.git"}
+		want := Repository{ID: 123, Name: name, GitURL: "https://github.com/testorg/lkml.20.git", DefaultBranch: "master"}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Fatalf("repository (-want +got):\n%s", diff)
 		}
@@ -101,8 +101,58 @@ func TestEnsureRepositoryRefusesUnsafeAdoption(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(remote)
 			})
-			if _, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", ""); err == nil {
+			if _, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", "", 0); err == nil {
 				t.Fatal("unsafe repository adopted")
+			}
+		})
+	}
+}
+
+func TestEnsureRepositoryRevalidatesApprovedIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*sdk.Repository) *sdk.Repository
+		valid  bool
+	}{
+		{"unchanged", func(r *sdk.Repository) *sdk.Repository { return r }, true},
+		{"replacement", func(r *sdk.Repository) *sdk.Repository { r.ID = sdk.Ptr[int64](456); return r }, false},
+		{"provenance changed", func(r *sdk.Repository) *sdk.Repository { r.Homepage = sdk.Ptr("https://example.org"); return r }, false},
+		{"deleted", func(*sdk.Repository) *sdk.Repository { return nil }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := testRepository("lkml.0", "/lkml/git/0.git")
+			replacement := tc.change(testRepository("lkml.0", "/lkml/git/0.git"))
+			var reads atomic.Int32
+			g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("must not mutate a previously approved repository: %s", r.Method)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				remote := replacement
+				if reads.Add(1) == 1 {
+					remote = original
+				}
+				if remote == nil {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(remote)
+			})
+			approved, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "", 0)
+			if err != nil || approved.ID != 123 {
+				t.Fatalf("initial approval = %+v, %v", approved, err)
+			}
+			current, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "", approved.ID)
+			if tc.valid {
+				if err != nil || current != approved {
+					t.Fatalf("unchanged repository = %+v, %v; want %+v", current, err, approved)
+				}
+			} else if err == nil || current != (Repository{}) {
+				t.Fatalf("unsafe repository approved: %+v, %v", current, err)
+			}
+			if reads.Load() != 2 {
+				t.Fatalf("repository read %d times, want revalidation", reads.Load())
 			}
 		})
 	}
@@ -122,7 +172,7 @@ func TestEnsureRepositoryRecoversLostCreationResponse(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(testRepository("netdev.0", "/netdev/git/0.git"))
 	})
-	if _, err := g.EnsureRepository(context.Background(), "/netdev/git/0.git", ""); err != nil {
+	if _, err := g.EnsureRepository(context.Background(), "/netdev/git/0.git", "", 0); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -156,7 +206,9 @@ func TestSetDefaultBranch(t *testing.T) {
 func TestRepositoryOperationsPropagateRateLimits(t *testing.T) {
 	for _, operation := range []string{"get", "create", "edit"} {
 		t.Run(operation, func(t *testing.T) {
+			var requests atomic.Int32
 			g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
 				if r.Method == http.MethodGet && operation == "create" {
 					w.WriteHeader(http.StatusNotFound)
 					return
@@ -165,15 +217,24 @@ func TestRepositoryOperationsPropagateRateLimits(t *testing.T) {
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(`{"message":"secondary rate limit","documentation_url":"https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits"}`))
 			})
+			// Let an unintended readback reach the handler instead of SDK throttling.
+			ctx := context.WithValue(t.Context(), sdk.BypassRateLimitCheck, true)
 			var err error
 			if operation == "edit" {
-				err = g.SetDefaultBranch(context.Background(), "lkml.0", "master")
+				err = g.SetDefaultBranch(ctx, "lkml.0", "master")
 			} else {
-				_, err = g.EnsureRepository(context.Background(), "/lkml/git/0.git", "")
+				_, err = g.EnsureRepository(ctx, "/lkml/git/0.git", "", 0)
 			}
 			var limited interface{ RetryAfter() time.Duration }
-			if !errors.As(err, &limited) || limited.RetryAfter() <= 0 {
-				t.Fatalf("%s did not expose a scheduler cooldown: %v", operation, err)
+			if !errors.As(err, &limited) || limited.RetryAfter() != 42*time.Second {
+				t.Fatalf("%s did not expose a 42-second scheduler cooldown: %v", operation, err)
+			}
+			wantRequests := int32(1)
+			if operation == "create" {
+				wantRequests = 2 // Initial GET and throttled POST, with no readback.
+			}
+			if requests.Load() != wantRequests {
+				t.Fatalf("%s made %d requests, want %d", operation, requests.Load(), wantRequests)
 			}
 		})
 	}
@@ -269,5 +330,6 @@ func testRepository(name, path string) *sdk.Repository {
 	return &sdk.Repository{
 		ID: sdk.Ptr[int64](123), Name: sdk.Ptr(name), FullName: sdk.Ptr("testorg/" + name),
 		Homepage: sdk.Ptr("https://lore.kernel.org" + path), CloneURL: sdk.Ptr("https://untrusted.example/repo.git"),
+		DefaultBranch: sdk.Ptr("master"),
 	}
 }

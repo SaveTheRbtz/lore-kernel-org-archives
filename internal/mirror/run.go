@@ -74,45 +74,33 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		return err
 	}
 	relay := &Relay{Client: client, MaxPushBytes: cfg.MaxPushBytes, metrics: metrics, health: health}
-	// The single worker owns this cache. Restarting simply rechecks the API.
-	type cachedRepository struct {
-		gh.Repository
-		defaultBranch string
-	}
-	repositories := map[string]*cachedRepository{}
+	// The single worker retains approved IDs even when a sync fails.
+	repositories := map[string]gh.Repository{}
 	syncRepo := func(ctx context.Context, sourcePath string, entry lore.ManifestEntry) error {
 		started := time.Now()
-		repository, exists := repositories[sourcePath]
-		if !exists {
-			repo, err := github.EnsureRepository(ctx, sourcePath, entry.Description)
-			if err != nil {
-				return err
-			}
-			repository = &cachedRepository{Repository: repo}
-			repositories[sourcePath] = repository
-		}
-		health.Progress("sync")
-		sourceURL, err := lore.SourceRepositoryURL(sourcePath)
+		repo, err := github.EnsureRepository(ctx, sourcePath, entry.Description, repositories[sourcePath].ID)
 		if err != nil {
 			return err
 		}
+		repositories[sourcePath] = repo
+		health.Progress("sync")
 		credential, err := github.Token(ctx)
 		if err != nil {
 			return err
 		}
 		health.Progress("sync")
-		result, err := relay.Sync(ctx, sourceURL, repository.GitURL, credential)
+		result, err := relay.Sync(ctx, lore.Origin+sourcePath, repo.GitURL, credential)
 		if err != nil {
-			delete(repositories, sourcePath)
 			return err
 		}
-		if result.DefaultBranch != "" && repository.defaultBranch != result.DefaultBranch {
-			if err := github.SetDefaultBranch(ctx, repository.Name, result.DefaultBranch); err != nil {
+		if result.DefaultBranch != "" && repo.DefaultBranch != result.DefaultBranch {
+			if err := github.SetDefaultBranch(ctx, repo.Name, result.DefaultBranch); err != nil {
 				return err
 			}
-			repository.defaultBranch = result.DefaultBranch
+			repo.DefaultBranch = result.DefaultBranch
+			repositories[sourcePath] = repo
 		}
-		log.Info("synced", "source", sourcePath, "repository", repository.Name, "duration", time.Since(started).String(),
+		log.Info("synced", "source", sourcePath, "repository", repo.Name, "duration", time.Since(started).String(),
 			"changed", result.Changed, "refs", len(result.SourceRefs), "bytes", result.Bytes)
 		return nil
 	}
