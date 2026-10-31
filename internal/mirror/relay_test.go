@@ -472,8 +472,8 @@ func TestReceivePackEarlyRejectionClosesBlockedSourceAndRedactsToken(t *testing.
 						t.Errorf("error %q does not include %q", err, want)
 					}
 				}
-				if ctx.Err() != nil {
-					t.Fatal("early rejection waited for the job timeout")
+				if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+					t.Fatalf("early rejection classified as cancellation: %v (context: %v)", err, ctx.Err())
 				}
 			})
 		})

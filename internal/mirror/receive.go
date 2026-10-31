@@ -77,15 +77,14 @@ func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 }
 
 func (r *Relay) receivePack(ctx context.Context, destination, token string, update *packp.ReferenceUpdateRequest) (int64, error) {
-	parent := ctx
-	ctx, cancel := context.WithCancel(ctx)
+	requestCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reader, writer := io.Pipe()
 	// HTTP cancellation can wait for its body reader. Unblock that reader
 	// before waiting for Do to return and closing the source pack below.
 	stop := context.AfterFunc(ctx, func() { _ = reader.CloseWithError(ctx.Err()) })
 	defer stop()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, destination+"/git-receive-pack", reader)
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, destination+"/git-receive-pack", reader)
 	if err != nil {
 		_ = reader.Close()
 		_ = writer.Close()
@@ -137,13 +136,13 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	}
 	// A receiver can reject a request before reading its body. Unblock both the
 	// pipe writer and a source HTTP read before joining the encoder goroutine.
+	_ = reader.Close()
 	cancel()
-	reader.CloseWithError(io.ErrClosedPipe)
 	if update.Packfile != nil {
 		_ = update.Packfile.Close()
 	}
 	encoded := <-done
-	cause := errors.Join(receiveErr, encoded.err, parent.Err())
+	cause := errors.Join(receiveErr, encoded.err, ctx.Err())
 	if cause == nil {
 		return encoded.n, nil
 	}
