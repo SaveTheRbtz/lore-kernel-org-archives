@@ -112,15 +112,18 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 		return result, nil
 	}
 	session := &relaySession{Relay: r, up: up, down: down, source: source, destination: destination, src: src, dst: dst, token: token}
-	err = session.sync(ctx, result.SourceRefs)
-	if checkpointRetry(err) && src.Capabilities.Supports(capability.Shallow) && src.Capabilities.Supports(capability.AllowReachableSHA1InWant) {
-		initialErr := err
-		if r.log != nil {
-			r.log.Warn("push_fallback", "source", sourceURL, "error", err, "request_bytes", session.bytes)
+	pinned := false
+	for name := range destinationRefs {
+		if strings.HasPrefix(name, checkpointRefPrefix) {
+			pinned = true
 		}
-		err = session.importCheckpoints(ctx, result.SourceRefs)
-		if err != nil {
-			err = fmt.Errorf("initial push: %v; checkpoint import: %w", initialErr, err)
+	}
+	if pinned {
+		err = session.importCheckpoints(ctx, result.SourceRefs, nil)
+	} else {
+		err = session.sync(ctx, result.SourceRefs)
+		if checkpointRetry(err) {
+			err = session.importCheckpoints(ctx, result.SourceRefs, err)
 		}
 	}
 	result.Bytes, result.Batches = session.bytes, session.batches
@@ -275,6 +278,9 @@ func relayRefs(adv *packp.AdvRefs, source bool) (map[string]plumbing.Hash, error
 				return nil, fmt.Errorf("source ref %q occupies GitHub's reserved namespace", name)
 			}
 			continue
+		}
+		if source && strings.HasPrefix(name, checkpointRefPrefix) {
+			return nil, fmt.Errorf("source ref %q occupies the import checkpoint namespace", name)
 		}
 		if err := plumbing.ReferenceName(name).Validate(); err != nil || hash == plumbing.ZeroHash {
 			return nil, fmt.Errorf("invalid advertised ref %q", name)

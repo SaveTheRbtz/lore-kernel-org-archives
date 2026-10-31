@@ -136,6 +136,9 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 				return sessionErr
 			}
 			adv, err = session.AdvertisedReferencesContext(r.Context())
+			if err == nil && s.boundaries != nil {
+				err = adv.Capabilities.Set(capability.Atomic)
+			}
 			if err == nil && s.receiveBand {
 				err = adv.Capabilities.Set(capability.Sideband64k)
 			}
@@ -298,6 +301,7 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 		}
 		var report *packp.ReportStatus
 		req.Capabilities.Delete(capability.Sideband64k)
+		req.Capabilities.Delete(capability.Atomic)
 		if s.skipUpdate {
 			if _, err := io.Copy(io.Discard, r.Body); err != nil {
 				return err

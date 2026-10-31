@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/google/go-cmp/cmp"
 )
@@ -55,10 +56,14 @@ func checkpointTestRefs(t *testing.T, store storer.ReferenceStorer) map[string]p
 
 func TestCheckpointImportPublishesCompleteHistoryAndFinalMetadata(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s, first, middle, _ := checkpointTestServer(t)
+		s, first, middle, tip := checkpointTestServer(t)
+		marker := "refs/meta/lore-mirror-import/" + tip.String()
 		var attempted []map[string]plumbing.Hash
 		var previousPush time.Time
 		s.rejectPush = func(req *packp.ReferenceUpdateRequest) bool {
+			if !req.Capabilities.Supports(capability.Atomic) {
+				t.Error("checkpoint and its marker were not updated atomically")
+			}
 			if !previousPush.IsZero() && time.Since(previousPush) < 10*time.Second {
 				t.Error("checkpoint pushes exceeded six per minute")
 			}
@@ -75,11 +80,13 @@ func TestCheckpointImportPublishesCompleteHistoryAndFinalMetadata(t *testing.T) 
 			t.Fatalf("checkpoint import = %+v, %v", result, err)
 		}
 		final := checkpointTestRefs(t, s.source)
+		finish := maps.Clone(final)
+		finish[marker] = plumbing.ZeroHash
 		want := []map[string]plumbing.Hash{
 			final,
-			{"refs/heads/master": first},
-			{"refs/heads/master": middle},
-			final,
+			{"refs/heads/master": first, marker: first},
+			{"refs/heads/master": middle, marker: middle},
+			finish,
 		}
 		if diff := cmp.Diff(want, attempted); diff != "" {
 			t.Fatalf("receive-pack targets (-want +got):\n%s", diff)
@@ -103,6 +110,8 @@ func TestCheckpointImportPublishesCompleteHistoryAndFinalMetadata(t *testing.T) 
 func TestCheckpointImportResumesAfterFailedBatch(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s, first, middle, tip := checkpointTestServer(t)
+		marker := "refs/meta/lore-mirror-import/" + tip.String()
+		latest := tip
 		var attempted []map[string]plumbing.Hash
 		failedBatch := false
 		s.rejectPush = func(req *packp.ReferenceUpdateRequest) bool {
@@ -113,8 +122,8 @@ func TestCheckpointImportResumesAfterFailedBatch(t *testing.T) {
 			attempted = append(attempted, targets)
 			for _, command := range req.Commands {
 				if command.Name == plumbing.Master {
-					if command.New == tip && command.Old != middle {
-						return true // Reject the full import, including the next Sync's attempt.
+					if command.New == tip && command.Old != middle || command.New == latest && latest != tip && command.Old != tip {
+						return true // Neither original nor updated history fits in one request.
 					}
 					if command.New == middle && !failedBatch {
 						failedBatch = true
@@ -128,17 +137,28 @@ func TestCheckpointImportResumesAfterFailedBatch(t *testing.T) {
 		if err == nil || result.Batches != 1 || len(attempted) != 3 {
 			t.Fatalf("failed batch did not stop the import: %+v, %v, targets=%v", result, err, attempted)
 		}
-		checkpoint := map[string]plumbing.Hash{"refs/heads/master": first}
+		checkpoint := map[string]plumbing.Hash{"refs/heads/master": first, marker: first}
 		if got := checkpointTestRefs(t, s.destination); !maps.Equal(got, checkpoint) {
 			t.Fatalf("failed batch changed the published checkpoint: %v", got)
 		}
+		// A fresh Relay must finish the pinned plan even after the source tip
+		// changes. The new tip has a different negotiation plan in this fixture.
+		latest = relayTestCommit(t, s.source, "mail arriving during import", tip)
+		relayTestSetRef(t, s.source, "refs/heads/master", latest)
 		attempted = nil
 		result, err = s.sync(t, 0)
 		if err != nil || !result.Changed || result.Batches != 2 {
 			t.Fatalf("resume = %+v, %v", result, err)
 		}
 		final := checkpointTestRefs(t, s.source)
-		want := []map[string]plumbing.Hash{final, {"refs/heads/master": middle}, final}
+		finish := maps.Clone(final)
+		finish["refs/heads/master"] = tip
+		finish[marker] = plumbing.ZeroHash
+		want := []map[string]plumbing.Hash{
+			{"refs/heads/master": middle, marker: middle},
+			finish,
+			{"refs/heads/master": latest},
+		}
 		if diff := cmp.Diff(want, attempted); diff != "" {
 			t.Fatalf("resumed receive-pack targets (-want +got):\n%s", diff)
 		}
@@ -154,8 +174,8 @@ func TestCheckpointImportRefusesAmbiguousState(t *testing.T) {
 			s.boundaries[tip] = []plumbing.Hash{first}
 			return map[string]plumbing.Hash{"refs/heads/master": middle}
 		},
-		"additional destination ref": func(_ *relayTestServer, first, _, _ plumbing.Hash) map[string]plumbing.Hash {
-			return map[string]plumbing.Hash{"refs/heads/master": first, "refs/meta/manual": first}
+		"oversized existing mirror": func(s *relayTestServer, first, _, _ plumbing.Hash) map[string]plumbing.Hash {
+			return map[string]plumbing.Hash{"refs/heads/master": first, "refs/meta/origins": checkpointTestRefs(t, s.source)["refs/meta/origins"]}
 		},
 		"ambiguous boundary after a valid one": func(s *relayTestServer, first, middle, tip plumbing.Hash) map[string]plumbing.Hash {
 			s.boundaries[middle] = []plumbing.Hash{first, tip}
@@ -179,9 +199,18 @@ func TestCheckpointImportRefusesAmbiguousState(t *testing.T) {
 				for name, hash := range original {
 					relayTestSetRef(t, s.destination, name, hash)
 				}
-				s.rejectPush = func(*packp.ReferenceUpdateRequest) bool { return s.pushes == 1 }
-				if _, err := s.sync(t, 0); err == nil {
+				limit := int64(0)
+				if name == "oversized existing mirror" {
+					limit = 180
+				} else {
+					s.rejectPush = func(*packp.ReferenceUpdateRequest) bool { return s.pushes == 1 }
+				}
+				_, err = s.sync(t, limit)
+				if err == nil {
 					t.Fatal("ambiguous checkpoint import succeeded")
+				}
+				if limit != 0 && (!errors.Is(err, ErrPushTooLarge) || retryDelay(err, 1) != 24*time.Hour || s.uploads != 1) {
+					t.Fatalf("oversized mirror lost its daily backoff or started checkpoint discovery: uploads=%d, error=%v", s.uploads, err)
 				}
 				if s.pushes != 1 {
 					t.Fatalf("ambiguous import attempted checkpoint writes: %d pushes", s.pushes)

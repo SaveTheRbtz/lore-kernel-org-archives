@@ -85,7 +85,7 @@ Discovery and successful repository rechecks use the same `-recheck` interval (d
 
 ## Limits
 
-Pushes are limited to 1.75 GiB. A failed initial import can retry in batches of roughly 10,000 commits, with paced requests and a verified checkpoint after each batch. This fallback supports a single checkpoint chain and resumes only from an exact source checkpoint; ambiguous histories or destination states stop the import. A batch that still exceeds the byte limit retries daily. GitHub also rejects blobs larger than 100 MiB. If an upstream default-branch rename requires deleting GitHub's current default branch, change the repository's default branch before retrying.
+Pushes are limited to 1.75 GiB. A failed initial import can retry in batches of roughly 10,000 commits, with paced requests and a verified checkpoint after each batch. A temporary Git ref pins the import target across restarts and new mail; it is removed when the import finishes. This fallback supports a single checkpoint chain and resumes only from an exact source checkpoint; ambiguous histories or destination states stop the import. A batch that still exceeds the byte limit retries daily. GitHub also rejects blobs larger than 100 MiB. If an upstream default-branch rename requires deleting GitHub's current default branch, change the repository's default branch before retrying.
 
 ## Development
 
