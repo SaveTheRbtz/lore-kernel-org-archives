@@ -6,7 +6,7 @@ RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 RUN go test -vet=all ./... \
-    && go build -buildvcs=false -trimpath -ldflags='-s -w' -o /lore-mirror ./cmd/lore-mirror
+    && go build -trimpath -ldflags=-s -o /lore-mirror ./cmd/lore-mirror
 
 FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /lore-mirror /lore-mirror
