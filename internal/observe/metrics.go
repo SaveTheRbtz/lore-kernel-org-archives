@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/oauth"
 )
@@ -63,10 +64,10 @@ func StartTelemetry(ctx context.Context, project string, health *Health) (*Telem
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(resource.NewSchemaless(
 			attribute.String("gcp.project_id", project),
-			attribute.String("cloud.platform", "gcp_compute_engine"),
-			attribute.String("cloud.availability_zone", zone),
-			attribute.String("service.name", "lore-mirror"),
-			attribute.String("service.instance.id", instance),
+			semconv.CloudPlatformGCPComputeEngine,
+			semconv.CloudAvailabilityZone(zone),
+			semconv.ServiceName("lore-mirror"),
+			semconv.ServiceInstanceID(instance),
 		)),
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter,
 			sdkmetric.WithInterval(time.Minute), sdkmetric.WithTimeout(10*time.Second))),
