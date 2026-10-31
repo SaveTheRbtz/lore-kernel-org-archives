@@ -95,31 +95,9 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath string, summar
 	if len(desc) > 350 {
 		desc = fmt.Sprintf("%.350s", desc)
 	}
-	remote, response, err := g.api.Repositories.Get(ctx, g.org, name)
+	remote, err := g.lookupOrCreate(ctx, name, desc, listURL, expectedID)
 	if err != nil {
-		if response == nil || response.StatusCode != http.StatusNotFound {
-			return Repository{}, retryPolicy(err)
-		}
-		if expectedID != 0 {
-			return Repository{}, fmt.Errorf("refusing to recreate %s/%s: approved repository %d is missing", g.org, name, expectedID)
-		}
-		remote, _, err = g.api.Repositories.Create(ctx, g.org, &sdk.Repository{
-			Name: new(name), Description: new(desc), Homepage: new(listURL),
-			Private: new(false), AutoInit: new(false),
-			HasIssues: new(false), HasWiki: new(false), HasProjects: new(false),
-		})
-		if err != nil {
-			createErr := retryPolicy(err)
-			if _, ok := errors.AsType[*retryafter.Error](createErr); ok {
-				return Repository{}, createErr
-			}
-			// Creation can succeed even when its response is lost. Read back once
-			// and apply the same provenance check before accepting the repository.
-			remote, _, err = g.api.Repositories.Get(ctx, g.org, name)
-			if err != nil {
-				return Repository{}, errors.Join(createErr, retryPolicy(err))
-			}
-		}
+		return Repository{}, err
 	}
 	repo, err := g.validateRepository(remote, name, sourceURL, listURL, expectedID)
 	if err != nil {
@@ -135,6 +113,38 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath string, summar
 		return g.validateRepository(remote, name, sourceURL, listURL, repo.ID)
 	}
 	return repo, nil
+}
+
+func (g *Client) lookupOrCreate(ctx context.Context, name, desc, listURL string, expectedID int64) (*sdk.Repository, error) {
+	remote, response, err := g.api.Repositories.Get(ctx, g.org, name)
+	if err == nil {
+		return remote, nil
+	}
+	if response == nil || response.StatusCode != http.StatusNotFound {
+		return nil, retryPolicy(err)
+	}
+	if expectedID != 0 {
+		return nil, fmt.Errorf("refusing to recreate %s/%s: approved repository %d is missing", g.org, name, expectedID)
+	}
+	remote, _, err = g.api.Repositories.Create(ctx, g.org, &sdk.Repository{
+		Name: new(name), Description: new(desc), Homepage: new(listURL),
+		Private: new(false), AutoInit: new(false),
+		HasIssues: new(false), HasWiki: new(false), HasProjects: new(false),
+	})
+	if err == nil {
+		return remote, nil
+	}
+	createErr := retryPolicy(err)
+	if _, ok := errors.AsType[*retryafter.Error](createErr); ok {
+		return nil, createErr
+	}
+	// Creation can succeed even when its response is lost. Read back once
+	// and let the caller validate provenance just like a successful lookup.
+	remote, _, err = g.api.Repositories.Get(ctx, g.org, name)
+	if err != nil {
+		return nil, errors.Join(createErr, retryPolicy(err))
+	}
+	return remote, nil
 }
 
 func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL, listURL string, expectedID int64) (Repository, error) {
