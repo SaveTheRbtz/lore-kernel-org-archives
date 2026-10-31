@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -347,5 +348,11 @@ func drainWork(events <-chan string) []string {
 		default:
 			return paths
 		}
+	}
+}
+
+func TestJitterAtDurationLimit(t *testing.T) {
+	if got := jitter(time.Duration(math.MaxInt64)); got != math.MaxInt64 {
+		t.Fatalf("jitter at maximum duration = %v", got)
 	}
 }

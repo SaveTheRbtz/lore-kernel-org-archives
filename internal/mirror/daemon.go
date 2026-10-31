@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"math/rand/v2"
 	"slices"
 	"time"
@@ -280,5 +281,5 @@ func serverRetryAfter(err error) time.Duration {
 }
 
 func jitter(delay time.Duration) time.Duration {
-	return delay + rand.N(delay)/10
+	return delay + min(rand.N(delay)/10, math.MaxInt64-delay)
 }
