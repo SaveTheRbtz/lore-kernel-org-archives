@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
@@ -77,6 +78,15 @@ func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// Encode closes the source after copying it. An early HTTP response can race
+// that close or leave Encode blocked in Read, requiring receivePack to close it.
+type receivePackSource struct {
+	io.Reader
+	close func() error
+}
+
+func (p receivePackSource) Close() error { return p.close() }
+
 func (r *Relay) receivePack(ctx context.Context, destination, token string, update *packp.ReferenceUpdateRequest) (int64, error) {
 	requestCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -89,12 +99,18 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	if err != nil {
 		_ = reader.Close()
 		_ = writer.Close()
+		if update.Packfile != nil {
+			_ = update.Packfile.Close()
+		}
 		return 0, err
 	}
 	request.SetBasicAuth("x-access-token", token)
 	request.Header.Set("Content-Type", "application/x-git-receive-pack-request")
 	request.Header.Set("Accept", "application/x-git-receive-pack-result")
 	request.Header.Set("User-Agent", "lore-mirror")
+	if pack := update.Packfile; pack != nil {
+		update.Packfile = receivePackSource{Reader: pack, close: sync.OnceValue(pack.Close)}
+	}
 	limited := &relayLimitedWriter{w: writer, limit: r.MaxPushBytes, metrics: r.metrics, health: r.health}
 	done := make(chan error, 1)
 	go func() {

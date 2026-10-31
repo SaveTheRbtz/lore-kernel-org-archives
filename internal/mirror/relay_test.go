@@ -493,6 +493,32 @@ func TestReceivePackEarlyRejectionClosesBlockedSourceAndRedactsToken(t *testing.
 	}
 }
 
+type countedPack struct {
+	io.Reader
+	closes atomic.Int32
+}
+
+func (p *countedPack) Close() error { p.closes.Add(1); return nil }
+
+func TestReceivePackOwnsSource(t *testing.T) {
+	receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
+		report := packp.ReportStatus{UnpackStatus: "ok", CommandStatuses: []*packp.CommandStatus{{ReferenceName: plumbing.Master, Status: "ok"}}}
+		if err := report.Encode(w); err != nil {
+			t.Error(err)
+		}
+	}))
+	relay := Relay{Client: relayTestClient(receiver), MaxPushBytes: 4096}
+	for _, destination := range []string{"https://example.com", "://invalid"} {
+		pack := &countedPack{Reader: bytes.NewReader(relayEmptyPack())}
+		_, err := relay.receivePack(t.Context(), destination, "token", testUpdate(t, pack))
+		if (err == nil) != (destination == "https://example.com") || pack.closes.Load() != 1 {
+			t.Fatalf("destination %q: closes=%d, error=%v", destination, pack.closes.Load(), err)
+		}
+	}
+}
+
 func TestReceivePackOmitsTruncatedHTTPDiagnostics(t *testing.T) {
 	const token = "test-token"
 	for name, credential := range map[string]string{"token": token, "basic": "eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg=="} {

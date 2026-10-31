@@ -221,7 +221,6 @@ func (s *relaySession) push(ctx context.Context, commands []*packp.Command) (int
 			return 0, fmt.Errorf("upload-pack: %w", fetchErr)
 		}
 		s.relay.health.SyncProgress()
-		defer func() { _ = response.Close() }()
 		var pack io.Reader = response
 		if fetch.Capabilities.Supports(capability.Sideband64k) {
 			demux := sideband.NewDemuxer(sideband.Sideband64k, response)
