@@ -3,7 +3,6 @@ package mirror
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"math"
 	"slices"
@@ -17,7 +16,7 @@ import (
 	"lore-mirror/internal/retryafter"
 )
 
-func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+var testLogger = slog.New(slog.DiscardHandler)
 
 func startDaemon(t *testing.T, d *daemon) context.CancelFunc {
 	t.Helper()
@@ -81,7 +80,7 @@ func TestNextRunSurvivesDiscovery(t *testing.T) {
 							return ctx.Err()
 						}
 					},
-					log: testLogger(), recheck: tc.recheck, timeout: time.Hour,
+					log: testLogger, recheck: tc.recheck, timeout: time.Hour,
 				}
 				startDaemon(t, &d)
 				first := <-attempts
@@ -124,7 +123,7 @@ func TestRateLimitBackoffAcrossRepositories(t *testing.T) {
 					return ctx.Err()
 				}
 			},
-			log: testLogger(), recheck: time.Nanosecond, timeout: time.Hour,
+			log: testLogger, recheck: time.Nanosecond, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
 		previous := time.Now()
@@ -169,7 +168,7 @@ func TestPendingUpdatesWhileSyncIsBlocked(t *testing.T) {
 				<-ctx.Done()
 				return ctx.Err()
 			},
-			queue: pending.Store, log: testLogger(), recheck: time.Nanosecond, timeout: time.Hour,
+			queue: pending.Store, log: testLogger, recheck: time.Nanosecond, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
 		blocked := <-started
@@ -214,7 +213,7 @@ func TestDiscoveryContinuesDuringSyncWithoutStarvingBackfill(t *testing.T) {
 				}
 				return nil
 			},
-			log: testLogger(), recheck: time.Nanosecond, timeout: time.Hour,
+			log: testLogger, recheck: time.Nanosecond, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
 		<-started
@@ -254,7 +253,7 @@ func TestRemovedArchivesAreNotRetried(t *testing.T) {
 				}
 				return nil
 			},
-			log: testLogger(), recheck: 10 * time.Second, timeout: time.Hour,
+			log: testLogger, recheck: 10 * time.Second, timeout: time.Hour,
 		}
 		startDaemon(t, &d)
 		if got := <-attempted; got != "/removed" {
@@ -283,7 +282,7 @@ func TestRunOnceContinuesPastFailure(t *testing.T) {
 			}
 			return nil
 		},
-		log: testLogger(), queue: func(int64) {}, timeout: time.Minute,
+		log: testLogger, queue: func(int64) {}, timeout: time.Minute,
 	}
 	if err := d.runOnce(t.Context()); err == nil {
 		t.Fatal("failed sync was not reported")
@@ -306,7 +305,7 @@ func TestHealthReportsBlockedWorkAndRecoversAfterCancellation(t *testing.T) {
 				<-ctx.Done()
 				return ctx.Err()
 			},
-			log: testLogger(), health: health, recheck: time.Hour, timeout: 24 * time.Hour,
+			log: testLogger, health: health, recheck: time.Hour, timeout: 24 * time.Hour,
 		}
 		check := func(want bool) {
 			t.Helper()

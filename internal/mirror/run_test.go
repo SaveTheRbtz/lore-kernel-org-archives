@@ -37,7 +37,7 @@ func TestRepositorySummary(t *testing.T) {
 				w.WriteHeader(tc.status)
 				_, _ = io.WriteString(w, tc.config)
 			}))
-			got, err := repositorySummary(t.Context(), server.Client(), testLogger(), "/list/git/0.git", entry)
+			got, err := repositorySummary(t.Context(), server.Client(), testLogger, "/list/git/0.git", entry)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -53,13 +53,13 @@ func TestRepositorySummaryPropagatesThrottleAndCancellation(t *testing.T) {
 		w.Header().Set("Retry-After", "120")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
-	_, err := repositorySummary(t.Context(), server.Client(), testLogger(), "/list/git/0.git", lore.ManifestEntry{})
+	_, err := repositorySummary(t.Context(), server.Client(), testLogger, "/list/git/0.git", lore.ManifestEntry{})
 	if delay := retryafter.FromError(err); delay != 2*time.Minute {
 		t.Fatalf("scheduler delay = %s, want 2m; error = %v", delay, err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err = repositorySummary(ctx, server.Client(), testLogger(), "/list/git/0.git", lore.ManifestEntry{})
+	_, err = repositorySummary(ctx, server.Client(), testLogger, "/list/git/0.git", lore.ManifestEntry{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled lookup = %v, want context.Canceled", err)
 	}
