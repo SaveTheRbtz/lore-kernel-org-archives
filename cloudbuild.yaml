@@ -3,10 +3,10 @@ steps:
     args:
       - build
       - -t
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/lore-mirror/lore-mirror:$BUILD_ID
+      - &image ${_REGION}-docker.pkg.dev/$PROJECT_ID/lore-mirror/lore-mirror:$BUILD_ID
       - .
 images:
-  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/lore-mirror/lore-mirror:$BUILD_ID
+  - *image
 substitutions:
   _REGION: us-central1
 options:
