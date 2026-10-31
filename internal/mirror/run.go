@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -47,19 +48,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		type item struct {
-			Source     string `json:"source"`
-			Repository string `json:"repository"`
-			lore.ManifestEntry
-		}
-		items := make([]item, 0, len(manifest))
-		for _, p := range lore.OrderedPaths(manifest) {
-			name, _ := lore.RepositoryName(p)
-			items = append(items, item{p, name, manifest[p]})
-		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(items)
+		return writeInventory(os.Stdout, manifest)
 	}
 	health := &observe.Health{Ready: selectionReady.Load}
 	metrics, shutdownMetrics, err := observe.StartTelemetry(ctx, os.Getenv("GOOGLE_CLOUD_PROJECT"), health)
@@ -138,6 +127,22 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		return nil
 	}
 	return err
+}
+
+func writeInventory(w io.Writer, manifest lore.Manifest) error {
+	type item struct {
+		Source     string `json:"source"`
+		Repository string `json:"repository"`
+		lore.ManifestEntry
+	}
+	items := make([]item, 0, len(manifest))
+	for _, p := range lore.OrderedPaths(manifest) {
+		name, _ := lore.RepositoryName(p)
+		items = append(items, item{p, name, manifest[p]})
+	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(items)
 }
 
 func repositorySummary(ctx context.Context, client *http.Client, log *slog.Logger, path string, entry lore.ManifestEntry) (*string, error) {
