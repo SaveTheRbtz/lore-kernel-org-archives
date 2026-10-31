@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+# COS supplies this credential helper; it gets tokens from the VM identity.
+registry_config=$(mktemp -d /run/lore-mirror-docker.XXXXXX)
+trap 'rm -rf "$registry_config"' EXIT
+printf '%s\n' '{"credHelpers":{"us-central1-docker.pkg.dev":"gcr"}}' > "$registry_config/config.json"
+systemctl start docker.service
+docker --config "$registry_config" pull '${image}'
+
+cat > /etc/systemd/system/lore-mirror.service <<'EOF'
+[Unit]
+Description=Lore mailing-list mirror
+Requires=docker.service
+After=docker.service network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+ExecStartPre=-/usr/bin/docker rm -f lore-mirror
+ExecStart=/usr/bin/docker run --rm --name=lore-mirror --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=2g --memory-swap=2g --pids-limit=128 --publish=8080:8080 --log-driver=gcplogs --env=GOOGLE_CLOUD_PROJECT=kernelorg-mirror --env=GITHUB_ORG=lore-kernel-org-archives --env=GITHUB_APP_SECRET=projects/kernelorg-mirror/secrets/github-app/versions/latest ${image} -lists=${lists}
+ExecStop=/usr/bin/docker stop -t 20 lore-mirror
+ExecStopPost=-/usr/bin/docker rm -f lore-mirror
+Restart=on-failure
+RestartSec=60s
+TimeoutStopSec=30s
+EOF
+systemctl daemon-reload
+systemctl restart lore-mirror.service

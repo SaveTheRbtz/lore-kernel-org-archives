@@ -233,9 +233,10 @@ resource "google_compute_instance_template" "mirror" {
   metadata = {
     "enable-oslogin"         = "TRUE"
     "block-project-ssh-keys" = "TRUE"
-    "lore-mirror-image"      = var.image
-    "lore-mirror-lists"      = var.lists
-    "startup-script"         = file("${path.module}/startup.sh")
+    "startup-script" = templatefile("${path.module}/startup.sh.tftpl", {
+      image = var.image
+      lists = var.lists
+    })
   }
   depends_on = [
     google_artifact_registry_repository_iam_member.runtime,
