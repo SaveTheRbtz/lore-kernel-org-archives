@@ -70,7 +70,8 @@ func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // EnsureRepository checks provenance before reconciling mirror metadata.
-func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description string, expectedID int64) (Repository, error) {
+// A nil summary preserves existing metadata and creates new mirrors with just the source marker.
+func (g *Client) EnsureRepository(ctx context.Context, sourcePath string, summary *string, expectedID int64) (Repository, error) {
 	name, err := lore.RepositoryName(sourcePath)
 	if err != nil {
 		return Repository{}, err
@@ -79,8 +80,8 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description s
 	list, _, _ := strings.Cut(sourcePath[1:], "/")
 	listURL := lore.Origin + "/" + list + "/"
 	desc := mirrorDescriptionPrefix + sourceURL
-	if description != "" {
-		desc += ": " + description
+	if summary != nil && *summary != "" {
+		desc += ": " + *summary
 	}
 	if runes := []rune(desc); len(runes) > 350 {
 		desc = string(runes[:350])
@@ -116,7 +117,7 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description s
 	if err != nil {
 		return Repository{}, err
 	}
-	if remote.GetDescription() != desc || remote.GetHomepage() != listURL {
+	if summary != nil && (remote.GetDescription() != desc || remote.GetHomepage() != listURL) {
 		remote, _, err = g.api.Repositories.Edit(ctx, g.org, name, &sdk.Repository{
 			Description: sdk.Ptr(desc), Homepage: sdk.Ptr(listURL),
 		})

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
@@ -78,11 +79,11 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	repositoryIDs := map[string]int64{}
 	syncRepo := func(ctx context.Context, sourcePath string, entry lore.ManifestEntry) error {
 		started := time.Now()
-		address, err := lore.FetchAddress(ctx, client, sourcePath)
+		summary, err := repositorySummary(ctx, client, log, sourcePath, entry)
 		if err != nil {
 			return err
 		}
-		repo, err := github.EnsureRepository(ctx, sourcePath, entry.Summary(sourcePath, address), repositoryIDs[sourcePath])
+		repo, err := github.EnsureRepository(ctx, sourcePath, summary, repositoryIDs[sourcePath])
 		if err != nil {
 			return err
 		}
@@ -134,6 +135,21 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		return nil
 	}
 	return err
+}
+
+func repositorySummary(ctx context.Context, client *http.Client, log *slog.Logger, path string, entry lore.ManifestEntry) (*string, error) {
+	address, err := lore.FetchAddress(ctx, client, path)
+	if err == nil {
+		return new(entry.Summary(path, address)), nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if serverRetryAfter(err) > 0 {
+		return nil, err
+	}
+	log.Warn("posting_address_unavailable", "source", path, "error", err)
+	return nil, nil
 }
 
 func (c Config) validate() error {

@@ -64,7 +64,7 @@ func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 		remote.Description = sdk.Ptr(body.Description)
 		_ = json.NewEncoder(w).Encode(remote)
 	})
-	got, err := g.EnsureRepository(t.Context(), "/git/git/1.git", "Git development <git@vger.kernel.org> (2 out of 2)", 0)
+	got, err := g.EnsureRepository(t.Context(), "/git/git/1.git", sdk.Ptr("Git development <git@vger.kernel.org> (2 out of 2)"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,16 +85,20 @@ func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 
 func TestEnsureRepositoryReconcilesMetadata(t *testing.T) {
 	const description = "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (1 out of 21)"
+	summary := sdk.Ptr("LKML (1 out of 21)")
 	for _, tc := range []struct {
 		name, homepage, description string
+		summary                     *string
 		expectedID                  int64
 		patches                     int32
 	}{
-		{"old format", "https://lore.kernel.org/lkml/git/0.git", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML [epoch 0]", 0, 1},
-		{"legacy source homepage", "https://lore.kernel.org/lkml/git/0.git", "", 0, 1},
-		{"new epoch", "https://lore.kernel.org/lkml/", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (1 out of 20)", 0, 1},
-		{"current", "https://lore.kernel.org/lkml/", description, 0, 0},
-		{"approved ID with cleared description", "https://lore.kernel.org/lkml/", "", 123, 1},
+		{"old format", "https://lore.kernel.org/lkml/git/0.git", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML [epoch 0]", summary, 0, 1},
+		{"legacy source homepage", "https://lore.kernel.org/lkml/git/0.git", "", summary, 0, 1},
+		{"new epoch", "https://lore.kernel.org/lkml/", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML (1 out of 20)", summary, 0, 1},
+		{"current", "https://lore.kernel.org/lkml/", description, summary, 0, 0},
+		{"approved ID with cleared description", "https://lore.kernel.org/lkml/", "", summary, 123, 1},
+		{"unavailable address", "https://lore.kernel.org/lkml/", "Mirror of https://lore.kernel.org/lkml/git/0.git: LKML <linux-kernel@vger.kernel.org>", nil, 0, 0},
+		{"unavailable address with legacy homepage", "https://lore.kernel.org/lkml/git/0.git", "", nil, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var patches atomic.Int32
@@ -116,7 +120,7 @@ func TestEnsureRepositoryReconcilesMetadata(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(remote)
 			})
-			if _, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "LKML (1 out of 21)", tc.expectedID); err != nil {
+			if _, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", tc.summary, tc.expectedID); err != nil {
 				t.Fatal(err)
 			}
 			if patches.Load() != tc.patches {
@@ -152,7 +156,7 @@ func TestEnsureRepositoryRefusesUnsafeAdoption(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(remote)
 			})
-			if _, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", "", 0); err == nil {
+			if _, err := g.EnsureRepository(context.Background(), "/lkml/git/0.git", nil, 0); err == nil {
 				t.Fatal("unsafe repository adopted")
 			}
 		})
@@ -191,12 +195,12 @@ func TestEnsureRepositoryRevalidatesApprovedIdentity(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(current)
 			})
-			approved, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "", 0)
+			approved, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", nil, 0)
 			if err != nil || approved.ID != 123 {
 				t.Fatalf("initial approval = %+v, %v", approved, err)
 			}
 			remote.Store(tc.current)
-			current, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "", approved.ID)
+			current, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", nil, approved.ID)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("revalidation error = %v, want error=%v", err, tc.wantErr)
 			}
@@ -211,6 +215,13 @@ func TestEnsureRepositoryRecoversLostCreationResponse(t *testing.T) {
 	var created atomic.Bool
 	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
+			var create sdk.Repository
+			if err := json.NewDecoder(r.Body).Decode(&create); err != nil {
+				t.Error(err)
+			}
+			if got := create.GetDescription(); got != "Mirror of https://lore.kernel.org/netdev/git/0.git" {
+				t.Errorf("creation without posting metadata: description = %q", got)
+			}
 			created.Store(true)
 			w.WriteHeader(http.StatusBadGateway)
 			return
@@ -221,7 +232,7 @@ func TestEnsureRepositoryRecoversLostCreationResponse(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(testRepository("netdev.0", "/netdev/git/0.git"))
 	})
-	got, err := g.EnsureRepository(t.Context(), "/netdev/git/0.git", "", 0)
+	got, err := g.EnsureRepository(t.Context(), "/netdev/git/0.git", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +294,7 @@ func TestRepositoryOperationsPropagateRateLimits(t *testing.T) {
 			if operation == "edit" {
 				err = g.SetDefaultBranch(ctx, "lkml.0", "master")
 			} else {
-				_, err = g.EnsureRepository(ctx, "/lkml/git/0.git", "", 0)
+				_, err = g.EnsureRepository(ctx, "/lkml/git/0.git", sdk.Ptr(""), 0)
 			}
 			var limited interface{ RetryAfter() time.Duration }
 			if !errors.As(err, &limited) || limited.RetryAfter() != 42*time.Second {
@@ -311,7 +322,7 @@ func TestCreateHonorsBareRetryAfter(t *testing.T) {
 		w.Header().Set("Retry-After", "120")
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
-	_, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "", 0)
+	_, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", nil, 0)
 	var limited interface{ RetryAfter() time.Duration }
 	if !errors.As(err, &limited) || limited.RetryAfter() != 2*time.Minute {
 		t.Errorf("expected a two-minute scheduler cooldown, got %v", err)
