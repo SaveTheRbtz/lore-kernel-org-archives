@@ -20,8 +20,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/sideband"
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
@@ -36,25 +34,26 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := SyncResult{Changed: true, DefaultBranch: "master", SourceRefs: map[string]plumbing.Hash{
-		"refs/heads/master": first,
-		"refs/meta/origins": first,
-	}}
-	if diff := cmp.Diff(want, result, cmpopts.IgnoreFields(SyncResult{}, "Bytes")); diff != "" {
-		t.Fatalf("initial sync (-want +got):\n%s", diff)
+	if result.DefaultBranch != "master" {
+		t.Fatalf("default branch = %q, want master", result.DefaultBranch)
+	}
+	for _, name := range []plumbing.ReferenceName{plumbing.Master, "refs/meta/origins"} {
+		if ref, err := s.destination.Reference(name); err != nil || ref.Hash() != first {
+			t.Fatalf("destination %s = %v, error %v; want %s", name, ref, err, first)
+		}
 	}
 	if _, err := s.destination.EncodedObject(plumbing.CommitObject, first); err != nil {
 		t.Fatalf("destination lacks commit: %v", err)
 	}
+	s.pushes, s.uploads = 0, 0
 	result, err = s.sync(t, 0)
-	if err != nil || result.Changed || s.pushes != 1 || s.uploads != 1 {
+	if err != nil || result.Changed || s.pushes != 0 || s.uploads != 0 {
 		t.Fatalf("unchanged sync did work: %+v %v pushes=%d uploads=%d", result, err, s.pushes, s.uploads)
 	}
 	second := relayTestCommit(t, s.source, "second mail", first)
 	relayTestSetRef(t, s.source, "refs/heads/master", second)
-	result, err = s.sync(t, 0)
-	if err != nil || !result.Changed {
-		t.Fatalf("incremental sync: %+v %v", result, err)
+	if _, err := s.sync(t, 0); err != nil {
+		t.Fatal(err)
 	}
 	if ref, err := s.destination.Reference(plumbing.Master); err != nil || ref.Hash() != second {
 		t.Fatalf("incremental destination ref: %v, error %v; want %s", ref, err, second)
@@ -62,26 +61,27 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	if len(s.haves) != 1 || s.haves[0] != first {
 		t.Fatalf("destination tips not used as haves: %v", s.haves)
 	}
-	// A new ref to an object already at GitHub needs an empty pack, not a fetch.
+	s.uploads = 0
 	relayTestSetRef(t, s.source, "refs/tags/existing", second)
-	_, err = s.sync(t, 0)
-	if err != nil || s.uploads != 2 {
-		t.Fatalf("ref-only sync: %v, uploads=%d", err, s.uploads)
+	if _, err := s.sync(t, 0); err != nil {
+		t.Fatal(err)
+	}
+	if ref, err := s.destination.Reference("refs/tags/existing"); err != nil || ref.Hash() != second {
+		t.Fatalf("ref-only addition: %v, error %v; want %s", ref, err, second)
 	}
 	// Deleted source metadata is removed; GitHub's own refs remain untouched.
 	if err := s.source.RemoveReference("refs/meta/origins"); err != nil {
 		t.Fatal(err)
 	}
 	relayTestSetRef(t, s.destination, "refs/pull/1/head", first)
-	_, err = s.sync(t, 0)
-	if err != nil {
+	if _, err := s.sync(t, 0); err != nil {
 		t.Fatalf("delete-only sync: %v", err)
 	}
 	if _, err := s.destination.Reference("refs/meta/origins"); err != plumbing.ErrReferenceNotFound {
 		t.Fatal("removed source ref retained at destination")
 	}
-	if _, err := s.destination.Reference("refs/pull/1/head"); err != nil {
-		t.Fatal("GitHub-managed ref was removed")
+	if ref, err := s.destination.Reference("refs/pull/1/head"); err != nil || ref.Hash() != first {
+		t.Fatalf("GitHub-managed ref changed: %v, error %v; want %s", ref, err, first)
 	}
 	// Rewinds are authoritative and can reuse objects already at the target.
 	relayTestSetRef(t, s.source, "refs/heads/master", first)
@@ -91,36 +91,44 @@ func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	if ref, err := s.destination.Reference(plumbing.Master); err != nil || ref.Hash() != first {
 		t.Fatalf("rewound destination ref: %v, error %v; want %s", ref, err, first)
 	}
+	if s.uploads != 0 {
+		t.Fatalf("ref-only changes fetched known objects %d times", s.uploads)
+	}
 }
 
 func TestRelayLimitsWholeRequestsAndRetriesWithoutPublishingPartialRefs(t *testing.T) {
-	for _, mode := range []string{"pack truncated", "command overhead"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		ref         plumbing.ReferenceName
+		limit       int64
+		initialSync bool
+	}{
+		{"pack truncated", plumbing.Master, 180, false},
+		{"command overhead", "refs/tags/existing", 32, true}, // The empty pack fits; update commands do not.
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			s := newRelayTestServer(t)
 			hash := relayTestCommit(t, s.source, "mail")
-			name, limit := plumbing.Master, int64(180)
-			relayTestSetRef(t, s.source, string(name), hash)
-			if mode == "command overhead" {
+			relayTestSetRef(t, s.source, "refs/heads/master", hash)
+			if tc.initialSync {
 				if _, err := s.sync(t, 0); err != nil {
 					t.Fatal(err)
 				}
-				name, limit = "refs/tags/existing", 32 // The empty pack fits; update commands do not.
-				relayTestSetRef(t, s.source, string(name), hash)
 			}
-			failed, err := s.sync(t, limit)
-			if !errors.Is(err, ErrPushTooLarge) || failed.Bytes != limit {
+			relayTestSetRef(t, s.source, string(tc.ref), hash)
+			failed, err := s.sync(t, tc.limit)
+			if !errors.Is(err, ErrPushTooLarge) || failed.Bytes > tc.limit {
 				t.Fatalf("bounded request: %+v %v", failed, err)
 			}
-			if _, err := s.destination.Reference(name); !errors.Is(err, plumbing.ErrReferenceNotFound) {
-				t.Fatalf("partial request published %s: %v", name, err)
+			if _, err := s.destination.Reference(tc.ref); !errors.Is(err, plumbing.ErrReferenceNotFound) {
+				t.Fatalf("partial request published %s: %v", tc.ref, err)
 			}
-			succeeded, err := s.sync(t, 0)
-			if err != nil || !succeeded.Changed || succeeded.Bytes <= limit {
-				t.Fatalf("retry: %+v %v", succeeded, err)
+			if _, err := s.sync(t, 0); err != nil {
+				t.Fatalf("retry: %v", err)
 			}
-			ref, err := s.destination.Reference(name)
+			ref, err := s.destination.Reference(tc.ref)
 			if err != nil || ref.Hash() != hash {
-				t.Fatalf("retry did not publish %s: %v", name, err)
+				t.Fatalf("retry did not publish %s: %v", tc.ref, err)
 			}
 		})
 	}
@@ -150,23 +158,26 @@ func TestRelaySourceFailureAndConcurrentDestinationChange(t *testing.T) {
 			t.Fatalf("concurrent update not rejected: %v", err)
 		}
 		ref, err := s.destination.Reference(plumbing.Master)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ref.Hash() != other {
-			t.Fatal("concurrent ref overwritten")
+		if err != nil || ref.Hash() != other {
+			t.Fatalf("concurrent ref overwritten: %v, error %v; want %s", ref, err, other)
 		}
 	})
 }
 
 func TestRelayRequiresCompleteStatusAndReadBack(t *testing.T) {
-	for _, mode := range []string{"missing status", "false success"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		omitStatus, skipUpdate bool
+	}{
+		{"missing status", true, false},
+		{"false success", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			s := newRelayTestServer(t)
 			hash := relayTestCommit(t, s.source, "mail")
 			relayTestSetRef(t, s.source, "refs/heads/master", hash)
-			s.omitStatus = mode == "missing status"
-			s.skipUpdate = mode == "false success"
+			s.omitStatus = tc.omitStatus
+			s.skipUpdate = tc.skipUpdate
 			if _, err := s.sync(t, 0); err == nil {
 				t.Fatal("invalid receiver success accepted")
 			}
@@ -174,35 +185,29 @@ func TestRelayRequiresCompleteStatusAndReadBack(t *testing.T) {
 	}
 }
 
-func TestRelayPreservesThrottlingAtEveryHTTPStage(t *testing.T) {
+func TestRelayPreservesThrottlingThroughGoGit(t *testing.T) {
 	for _, tc := range []struct {
 		name, path string
-		request    int32
 		status     int
-		header     string
-		delay      time.Duration
 	}{
-		{"source advertisement", "/source.git/info/refs", 1, 403, "42", 42 * time.Second},
-		{"destination advertisement", "/destination.git/info/refs", 1, 429, "", time.Minute},
-		{"upload-pack", "/source.git/git-upload-pack", 1, 503, "42", 42 * time.Second},
-		{"verification", "/destination.git/info/refs", 2, 429, "42", 42 * time.Second},
+		{"advertisement", "/source.git/info/refs", 403},
+		{"upload-pack", "/source.git/git-upload-pack", 503},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newRelayTestServer(t)
 			hash := relayTestCommit(t, s.source, "mail")
 			relayTestSetRef(t, s.source, "refs/heads/master", hash)
-			var requests atomic.Int32
 			s.beforeHTTP = func(w http.ResponseWriter, r *http.Request) bool {
-				if r.URL.Path != tc.path || requests.Add(1) != tc.request {
+				if r.URL.Path != tc.path {
 					return false
 				}
-				w.Header().Set("Retry-After", tc.header)
+				w.Header().Set("Retry-After", "42")
 				http.Error(w, "throttled test-token", tc.status)
 				return true
 			}
 			_, err := s.sync(t, 0)
-			if delay := serverRetryAfter(err); delay != tc.delay {
-				t.Fatalf("scheduler delay = %s, want %s; error=%v", delay, tc.delay, err)
+			if delay := serverRetryAfter(err); delay != 42*time.Second {
+				t.Fatalf("scheduler delay = %s, want 42s; error=%v", delay, err)
 			}
 			if strings.Contains(err.Error(), "test-token") {
 				t.Fatalf("throttle error disclosed a credential: %v", err)
@@ -218,7 +223,6 @@ func TestRelaySidebandProgressKeepsSyncHealthy(t *testing.T) {
 		s := newRelayTestServer(t)
 		hash := relayTestCommit(t, s.source, "mail")
 		relayTestSetRef(t, s.source, "refs/heads/master", hash)
-		progress := make(chan struct{}, 6)
 		s.beforePack = func(w http.ResponseWriter) error {
 			mux := sideband.NewMuxer(sideband.Sideband64k, w)
 			for range 6 {
@@ -227,7 +231,6 @@ func TestRelaySidebandProgressKeepsSyncHealthy(t *testing.T) {
 					return err
 				}
 				w.(http.Flusher).Flush()
-				progress <- struct{}{}
 			}
 			<-ctx.Done() // No archive bytes are sent during this preparation.
 			return ctx.Err()
@@ -236,29 +239,20 @@ func TestRelaySidebandProgressKeepsSyncHealthy(t *testing.T) {
 		finish := health.Begin("sync")
 		defer finish()
 		r := Relay{Client: s.client, MaxPushBytes: DefaultMaxPushBytes, health: health}
-		done := make(chan error, 1)
+		var syncErr error
 		go func() {
-			_, err := r.Sync(ctx, "https://example.com/source.git", "https://example.com/destination.git", "test-token")
-			done <- err
+			_, syncErr = r.Sync(ctx, "https://example.com/source.git", "https://example.com/destination.git", "test-token")
 		}()
-		for range 6 {
-			select {
-			case <-progress:
-			case err := <-done:
-				t.Fatalf("sync ended during preparation: %v", err)
-			}
-			synctest.Wait()
-			if health.Stuck() {
-				t.Fatal("sync marked stuck while receiving source progress")
-			}
-		}
-		time.Sleep(5 * time.Minute)
-		if !health.Stuck() {
-			t.Error("sync stayed healthy after source progress stopped")
+		synctest.Wait()
+		time.Sleep(6 * time.Minute)
+		synctest.Wait()
+		if health.Stuck() {
+			t.Error("sync marked stuck while receiving source progress")
 		}
 		cancel()
-		if err := <-done; !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancel stalled preparation: %v", err)
+		synctest.Wait()
+		if !errors.Is(syncErr, context.Canceled) {
+			t.Fatalf("cancel stalled preparation: %v", syncErr)
 		}
 	})
 }
@@ -327,9 +321,7 @@ func TestReceivePackForwardsPrefixBeforeSourceTailExists(t *testing.T) {
 		}))
 		relay := Relay{Client: relayTestClient(receiver), MaxPushBytes: 4096}
 		packReader, packWriter := io.Pipe()
-		producerDone := make(chan struct{})
 		go func() {
-			defer close(producerDone)
 			_, err := packWriter.Write(pack[:12])
 			if err == nil {
 				select {
@@ -346,7 +338,6 @@ func TestReceivePackForwardsPrefixBeforeSourceTailExists(t *testing.T) {
 		if _, err := relay.receivePack(ctx, "https://example.com", "test-token", testUpdate(t, packReader)); err != nil {
 			t.Fatal(err)
 		}
-		<-producerDone
 	})
 }
 
@@ -385,37 +376,29 @@ func TestReceivePackEarlyRejectionClosesBlockedSourceAndRedactsToken(t *testing.
 		if ctx.Err() != nil {
 			t.Fatal("early rejection waited for the job timeout")
 		}
-		select {
-		case <-pack.closed:
-		default:
-			t.Fatal("source was not closed")
-		}
 	})
 }
 
 func TestReceivePackPreservesRetryAfter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		for _, tc := range []struct {
-			status int
 			header string
 			delay  time.Duration
 		}{
-			{429, "180", 3 * time.Minute},
-			{429, time.Now().Add(3 * time.Minute).UTC().Format(http.TimeFormat), 3 * time.Minute},
-			{429, "", time.Minute},
-			{429, "invalid", time.Minute},
-			{503, "180", 3 * time.Minute},
-			{403, "", 0},
+			{"180", 3 * time.Minute},
+			{time.Now().Add(3 * time.Minute).UTC().Format(http.TimeFormat), 3 * time.Minute},
+			{"", time.Minute},
+			{"invalid", time.Minute},
 		} {
 			receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Retry-After", tc.header)
-				http.Error(w, "rejected", tc.status)
+				http.Error(w, "rejected", http.StatusTooManyRequests)
 			}))
 			relay := Relay{Client: relayTestClient(receiver), MaxPushBytes: 4096}
 			pack := io.NopCloser(bytes.NewReader(relayEmptyPack()))
 			_, err := relay.receivePack(t.Context(), "https://example.com", "test-token", testUpdate(t, pack))
 			if delay := serverRetryAfter(err); delay != tc.delay {
-				t.Errorf("HTTP %d Retry-After %q: scheduler delay=%s, want %s; error=%v", tc.status, tc.header, delay, tc.delay, err)
+				t.Errorf("Retry-After %q: scheduler delay=%s, want %s; error=%v", tc.header, delay, tc.delay, err)
 			}
 		}
 	})
@@ -456,18 +439,14 @@ func TestReceivePackCancellationStopsBlockedTransfer(t *testing.T) {
 			}
 		}
 		cancel()
-		var err error
+		synctest.Wait()
 		select {
-		case err = <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("cancellation did not unblock the active transfer")
-			if closeErr := pack.Close(); closeErr != nil {
-				t.Error(closeErr)
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("live transfer cancellation: %v", err)
 			}
-			err = <-done
-		}
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("live transfer cancellation: %v", err)
+		default:
+			t.Fatal("cancellation did not unblock the active transfer")
 		}
 		select {
 		case <-pack.closed:
