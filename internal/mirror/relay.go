@@ -119,8 +119,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 		newRef := "refs/heads/" + result.DefaultBranch
 		firstTarget[newRef] = sourceRefs[newRef]
 	}
-	result.Bytes, result.Changed, err = session.reconcile(ctx, firstTarget)
-	if err != nil {
+	if err := session.reconcile(ctx, firstTarget, &result); err != nil {
 		return result, err
 	}
 	if changingDefault {
@@ -129,38 +128,37 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 		}
 		r.health.SyncProgress()
 	}
-	if !staged {
-		return result, nil
+	if staged {
+		err = session.reconcile(ctx, sourceRefs, &result)
 	}
-	n, changed, err := session.reconcile(ctx, sourceRefs)
-	result.Bytes += n
-	result.Changed = result.Changed || changed
 	return result, err
 }
 
-func (s *relaySession) reconcile(ctx context.Context, want map[string]plumbing.Hash) (written int64, changed bool, err error) {
+func (s *relaySession) reconcile(ctx context.Context, want map[string]plumbing.Hash, result *SyncResult) error {
 	if maps.Equal(want, s.destinationRefs) {
-		return 0, false, nil
+		return nil
 	}
-	written, err = s.push(ctx, relayCommands(want, s.destinationRefs))
+	written, err := s.push(ctx, relayCommands(want, s.destinationRefs))
+	result.Bytes += written
 	if err != nil {
-		return written, false, err
+		return err
 	}
 	s.relay.health.SyncProgress()
 	dst, err := s.receive.AdvertisedReferencesContext(ctx)
 	if err != nil {
-		return written, false, fmt.Errorf("verify destination: %w", err)
+		return fmt.Errorf("verify destination: %w", err)
 	}
 	s.relay.health.SyncProgress()
 	refs, err := relayRefs(dst, false)
 	if err != nil {
-		return written, false, fmt.Errorf("verify destination: %w", err)
+		return fmt.Errorf("verify destination: %w", err)
 	}
 	if !maps.Equal(want, refs) {
-		return written, false, errors.New("destination refs differ after push; retry from fresh advertisements")
+		return errors.New("destination refs differ after push; retry from fresh advertisements")
 	}
 	s.destination, s.destinationRefs = dst, refs
-	return written, true, nil
+	result.Changed = true
+	return nil
 }
 
 func (s *relaySession) push(ctx context.Context, commands []*packp.Command) (int64, error) {
