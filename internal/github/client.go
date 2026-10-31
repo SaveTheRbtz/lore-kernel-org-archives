@@ -190,11 +190,7 @@ func retryPolicy(err error) error {
 		return retryafter.Wrap(err, delay)
 	}
 	if secondary, ok := errors.AsType[*sdk.AbuseRateLimitError](err); ok {
-		var delay time.Duration
-		if secondary.RetryAfter != nil {
-			delay = *secondary.RetryAfter
-		}
-		delay = retryafter.Delay(secondary.Response, delay)
+		delay := retryafter.Delay(secondary.Response, secondary.GetRetryAfter())
 		if delay <= 0 {
 			delay = time.Minute
 		}
