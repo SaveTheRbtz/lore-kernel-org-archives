@@ -1,4 +1,4 @@
-package main
+package mirror
 
 import (
 	"context"
@@ -8,28 +8,30 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"lore-mirror/internal/lore"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func TestReconcileKeepsFailuresAndDropsOnlyLocalWork(t *testing.T) {
-	entry := ManifestEntry{Fingerprint: "a", Modified: 1}
+	entry := lore.ManifestEntry{Fingerprint: "a", Modified: 1}
 	queue := map[string]*work{}
-	reconcile(queue, Manifest{"/x/git/0.git": entry})
+	reconcile(queue, lore.Manifest{"/x/git/0.git": entry})
 	retry := time.Now().Add(time.Hour)
 	queue["/x/git/0.git"].failures = 2
 	queue["/x/git/0.git"].next = retry
-	reconcile(queue, Manifest{"/x/git/0.git": entry})
+	reconcile(queue, lore.Manifest{"/x/git/0.git": entry})
 	item := queue["/x/git/0.git"]
 	if item.done || item.failures != 2 || !item.next.Equal(retry) {
 		t.Fatal("unchanged manifest lost failed work or its backoff")
 	}
 	entry.Fingerprint = "b"
-	reconcile(queue, Manifest{"/x/git/0.git": entry})
+	reconcile(queue, lore.Manifest{"/x/git/0.git": entry})
 	if queue["/x/git/0.git"].done || queue["/x/git/0.git"].failures != 2 || !queue["/x/git/0.git"].next.Equal(retry) {
 		t.Fatal("changed source erased the retry deadline")
 	}
-	reconcile(queue, Manifest{"/y/git/0.git": entry})
+	reconcile(queue, lore.Manifest{"/y/git/0.git": entry})
 	if _, exists := queue["/x/git/0.git"]; exists {
 		t.Fatal("removed source still queued")
 	}
@@ -38,8 +40,8 @@ func TestReconcileKeepsFailuresAndDropsOnlyLocalWork(t *testing.T) {
 func TestHotInboxDoesNotStarveBackfill(t *testing.T) {
 	now := time.Now()
 	queue := map[string]*work{
-		"hot":  {entry: ManifestEntry{Modified: 100}, attempted: now.Add(-time.Minute)},
-		"cold": {entry: ManifestEntry{Modified: 1}},
+		"hot":  {entry: lore.ManifestEntry{Modified: 100}, attempted: now.Add(-time.Minute)},
+		"cold": {entry: lore.ManifestEntry{Modified: 1}},
 	}
 	path, _ := nextWork(queue, now, now.Add(time.Hour))
 	if path != "cold" {
@@ -52,10 +54,10 @@ func TestRateLimitStopsOtherRepositoriesAndSurvivesRescan(t *testing.T) {
 	defer cancel()
 	var attempts atomic.Int64
 	d := daemon{
-		fetch: func(context.Context) (Manifest, error) {
-			return Manifest{"/a/git/0.git": {Modified: time.Now().UnixNano()}, "/b/git/0.git": {}}, nil
+		fetch: func(context.Context) (lore.Manifest, error) {
+			return lore.Manifest{"/a/git/0.git": {Modified: time.Now().UnixNano()}, "/b/git/0.git": {}}, nil
 		},
-		sync: func(context.Context, string, ManifestEntry) error { attempts.Add(1); return delayedError{} },
+		sync: func(context.Context, string, lore.ManifestEntry) error { attempts.Add(1); return delayedError{} },
 		log:  testLogger(), poll: 5 * time.Millisecond, rescan: 10 * time.Millisecond, timeout: time.Second,
 	}
 	_ = d.run(ctx)
@@ -67,10 +69,10 @@ func TestRateLimitStopsOtherRepositoriesAndSurvivesRescan(t *testing.T) {
 func TestRunOnceContinuesPastFailure(t *testing.T) {
 	var attempted []string
 	d := daemon{
-		fetch: func(context.Context) (Manifest, error) {
-			return Manifest{"/a/git/0.git": {Modified: 2}, "/b/git/0.git": {Modified: 1}}, nil
+		fetch: func(context.Context) (lore.Manifest, error) {
+			return lore.Manifest{"/a/git/0.git": {Modified: 2}, "/b/git/0.git": {Modified: 1}}, nil
 		},
-		sync: func(_ context.Context, path string, _ ManifestEntry) error {
+		sync: func(_ context.Context, path string, _ lore.ManifestEntry) error {
 			attempted = append(attempted, path)
 			if path == "/a/git/0.git" {
 				return errors.New("failed")
@@ -96,7 +98,7 @@ func TestDiscoveryContinuesDuringSyncAndDoesNotLoseChanges(t *testing.T) {
 	release := make(chan struct{})
 	synced := make(chan string, 4)
 	d := daemon{
-		fetch: func(context.Context) (Manifest, error) {
+		fetch: func(context.Context) (lore.Manifest, error) {
 			n := polls.Add(1)
 			fingerprint := "old"
 			if n > 1 {
@@ -105,9 +107,9 @@ func TestDiscoveryContinuesDuringSyncAndDoesNotLoseChanges(t *testing.T) {
 			if n == 2 {
 				close(changed)
 			}
-			return Manifest{"/x/git/0.git": {Fingerprint: fingerprint, Modified: n}}, nil
+			return lore.Manifest{"/x/git/0.git": {Fingerprint: fingerprint, Modified: n}}, nil
 		},
-		sync: func(ctx context.Context, _ string, entry ManifestEntry) error {
+		sync: func(ctx context.Context, _ string, entry lore.ManifestEntry) error {
 			if entry.Fingerprint == "old" {
 				close(first)
 				select {
@@ -162,9 +164,9 @@ func TestDiscoveryContinuesDuringSyncAndDoesNotLoseChanges(t *testing.T) {
 func TestNextWorkRespectsBackoffAndPrioritizesFreshEntries(t *testing.T) {
 	now := time.Now()
 	queue := map[string]*work{
-		"/busy/git/0.git":  {entry: ManifestEntry{Modified: 30}, next: now.Add(time.Minute)},
-		"/fresh/git/0.git": {entry: ManifestEntry{Modified: 20}},
-		"/old/git/0.git":   {entry: ManifestEntry{Modified: 10}},
+		"/busy/git/0.git":  {entry: lore.ManifestEntry{Modified: 30}, next: now.Add(time.Minute)},
+		"/fresh/git/0.git": {entry: lore.ManifestEntry{Modified: 20}},
+		"/old/git/0.git":   {entry: lore.ManifestEntry{Modified: 10}},
 	}
 	path, _ := nextWork(queue, now, now.Add(time.Hour))
 	if path != "/fresh/git/0.git" {
@@ -175,23 +177,6 @@ func TestNextWorkRespectsBackoffAndPrioritizesFreshEntries(t *testing.T) {
 	path, wake := nextWork(queue, now, now.Add(time.Hour))
 	if path != "" || !wake.Equal(now.Add(time.Minute)) {
 		t.Fatalf("backoff ignored: %q %v", path, wake)
-	}
-}
-
-func TestSelectManifest(t *testing.T) {
-	manifest := Manifest{"/cgroups/git/0.git": {}, "/lkml/git/0.git": {}, "/lkml/git/1.git": {}}
-	selected, err := selectManifest(manifest, "lkml")
-	if err != nil || len(selected) != 2 {
-		t.Fatalf("selected %v, error %v", selected, err)
-	}
-	if _, err := selectManifest(manifest, "missing"); err == nil {
-		t.Fatal("missing inbox accepted")
-	}
-	if _, err := selectManifest(manifest, "../lkml"); err == nil {
-		t.Fatal("invalid inbox accepted")
-	}
-	if _, err := selectManifest(Manifest{"/Example/git/0.git": {}, "/example/git/0.git": {}}, ""); err == nil {
-		t.Fatal("case-insensitive name collision accepted")
 	}
 }
 

@@ -1,4 +1,4 @@
-package main
+package observe
 
 import (
 	"context"
@@ -19,9 +19,9 @@ import (
 	"google.golang.org/grpc/credentials/oauth"
 )
 
-// telemetry has no repository, inbox, URL, or error-message labels. Streaming
+// Telemetry has no repository, inbox, URL, or error-message labels. Streaming
 // bytes only touch atomics; the exporter collects them once a minute.
-type telemetry struct {
+type Telemetry struct {
 	operations metric.Int64Counter
 	duration   metric.Float64Histogram
 	pending    atomic.Int64
@@ -33,7 +33,7 @@ type telemetry struct {
 }
 
 // An empty project disables telemetry, including metadata and ADC requests.
-func startTelemetry(ctx context.Context, project string, health *healthState) (*telemetry, func(context.Context) error, error) {
+func StartTelemetry(ctx context.Context, project string, health *Health) (*Telemetry, func(context.Context) error, error) {
 	if project == "" {
 		return nil, func(context.Context) error { return nil }, nil
 	}
@@ -71,7 +71,7 @@ func startTelemetry(ctx context.Context, project string, health *healthState) (*
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter,
 			sdkmetric.WithInterval(time.Minute), sdkmetric.WithTimeout(10*time.Second))),
 	)
-	t, err := newTelemetry(provider.Meter("lore-mirror"), health)
+	t, err := NewTelemetry(provider.Meter("lore-mirror"), health)
 	if err != nil {
 		_ = provider.Shutdown(ctx)
 		return nil, nil, err
@@ -80,8 +80,8 @@ func startTelemetry(ctx context.Context, project string, health *healthState) (*
 	return t, provider.Shutdown, nil
 }
 
-func newTelemetry(meter metric.Meter, health *healthState) (*telemetry, error) {
-	t := &telemetry{}
+func NewTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
+	t := &Telemetry{}
 	operations, e1 := meter.Int64Counter("lore_mirror_operations",
 		metric.WithDescription("Completed operations by outcome"), metric.WithUnit("{operation}"))
 	duration, e2 := meter.Float64Histogram("lore_mirror_operation_duration",
@@ -116,7 +116,7 @@ func newTelemetry(meter metric.Meter, health *healthState) (*telemetry, error) {
 		observer.ObserveInt64(pending, t.pending.Load())
 		observer.ObserveInt64(busy, active)
 		unhealthy := int64(0)
-		if health.stuck() {
+		if health.Stuck() {
 			unhealthy = 1
 		}
 		observer.ObserveInt64(stuck, unhealthy)
@@ -136,7 +136,7 @@ func newTelemetry(meter metric.Meter, health *healthState) (*telemetry, error) {
 	return t, err
 }
 
-func (t *telemetry) operation(ctx context.Context, operation string, started time.Time, err error) {
+func (t *Telemetry) Operation(ctx context.Context, operation string, started time.Time, err error) {
 	if t == nil || (operation != "discovery" && operation != "sync") {
 		return
 	}
@@ -151,13 +151,13 @@ func (t *telemetry) operation(ctx context.Context, operation string, started tim
 	t.duration.Record(ctx, time.Since(started).Seconds(), attrs)
 }
 
-func (t *telemetry) queue(pending int64) {
+func (t *Telemetry) Queue(pending int64) {
 	if t != nil {
 		t.pending.Store(pending)
 	}
 }
 
-func (t *telemetry) busy(active bool) {
+func (t *Telemetry) Busy(active bool) {
 	if t == nil {
 		return
 	}
@@ -171,7 +171,7 @@ func (t *telemetry) busy(active bool) {
 	}
 }
 
-func (t *telemetry) addBytes(_ context.Context, direction string, n int64) {
+func (t *Telemetry) AddBytes(_ context.Context, direction string, n int64) {
 	if t == nil || n <= 0 {
 		return
 	}

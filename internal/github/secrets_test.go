@@ -1,4 +1,4 @@
-package main
+package github
 
 import (
 	"context"
@@ -134,7 +134,7 @@ func TestSecretReaderCancellation(t *testing.T) {
 
 func TestTokenSourceRequiresSecretManager(t *testing.T) {
 	t.Setenv("GITHUB_APP_SECRET", "")
-	if _, err := tokenSource(context.Background(), http.DefaultClient); err == nil {
+	if _, err := TokenSource(context.Background(), http.DefaultClient); err == nil {
 		t.Fatal("missing secret resource accepted")
 	}
 }

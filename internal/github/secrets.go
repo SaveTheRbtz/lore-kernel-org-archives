@@ -1,4 +1,4 @@
-package main
+package github
 
 import (
 	"context"
@@ -26,7 +26,8 @@ type secretReader struct {
 	metadataURL, secretURL string
 }
 
-func tokenSource(ctx context.Context, githubClient *http.Client) (func(context.Context) (string, error), error) {
+// TokenSource loads GitHub App credentials from Secret Manager using VM identity.
+func TokenSource(ctx context.Context, githubClient *http.Client) (func(context.Context) (string, error), error) {
 	name := os.Getenv("GITHUB_APP_SECRET")
 	if name == "" {
 		return nil, errors.New("set GITHUB_APP_SECRET to a Secret Manager version resource; -discover needs no credentials")

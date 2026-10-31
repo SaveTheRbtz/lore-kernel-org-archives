@@ -1,85 +1,46 @@
-package main
+package mirror
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
+
+	gh "lore-mirror/internal/github"
+	"lore-mirror/internal/lore"
+	"lore-mirror/internal/observe"
 )
 
-type config struct {
-	source, org, lists          string
-	discover, once, healthcheck bool
-	poll, rescan, timeout       time.Duration
-	maxPushBytes                int64
+type Config struct {
+	Source, Org, Lists    string
+	Discover, Once        bool
+	Poll, Rescan, Timeout time.Duration
+	MaxPushBytes          int64
 }
 
-func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	if err := run(log); err != nil {
-		log.Error("stopped", "error", err)
-		os.Exit(1)
-	}
-}
-
-func run(log *slog.Logger) error {
-	var cfg config
-	org := os.Getenv("GITHUB_ORG")
-	if org == "" {
-		org = "lore-kernel-org-archives"
-	}
-	flag.StringVar(&cfg.source, "source", "https://lore.kernel.org", "source origin, with matching /manifest.js.gz")
-	flag.StringVar(&cfg.org, "org", org, "dedicated GitHub organization (or GITHUB_ORG)")
-	flag.StringVar(&cfg.lists, "lists", "", "comma-separated inboxes to mirror; empty means all")
-	flag.BoolVar(&cfg.discover, "discover", false, "print inventory and exit without contacting GitHub")
-	flag.BoolVar(&cfg.once, "once", false, "attempt each selected repository once, then exit")
-	flag.BoolVar(&cfg.healthcheck, "healthcheck", false, "check the local /healthz endpoint and exit")
-	flag.DurationVar(&cfg.poll, "poll", time.Minute, "manifest polling interval")
-	flag.DurationVar(&cfg.rescan, "rescan", 24*time.Hour, "reconcile unchanged repositories at this interval")
-	flag.DurationVar(&cfg.timeout, "timeout", 30*time.Minute, "maximum time for one repository sync")
-	flag.Int64Var(&cfg.maxPushBytes, "max-push-bytes", 7*(1<<28), "maximum receive-pack request bytes, below GitHub's 2 GiB limit")
-	flag.Parse()
-	if flag.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments: %v", flag.Args())
-	}
-	if cfg.healthcheck {
-		client := newHTTPClient()
-		client.Timeout = 5 * time.Second
-		response, err := client.Get("http://127.0.0.1:8080/healthz")
-		if err != nil {
-			return fmt.Errorf("healthcheck: %w", err)
-		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			return fmt.Errorf("healthcheck: HTTP %d", response.StatusCode)
-		}
-		return nil
-	}
+func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	client := newHTTPClient()
-	fetch := func(ctx context.Context) (Manifest, error) {
+	fetch := func(ctx context.Context) (lore.Manifest, error) {
 		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
-		manifest, err := FetchManifest(ctx, client, cfg.source)
+		manifest, err := lore.FetchManifest(ctx, client, cfg.Source)
 		if err != nil {
 			return nil, err
 		}
-		return selectManifest(manifest, cfg.lists)
+		return lore.SelectManifest(manifest, cfg.Lists)
 	}
-	if cfg.discover {
+	if cfg.Discover {
 		manifest, err := fetch(ctx)
 		if err != nil {
 			return err
@@ -87,19 +48,19 @@ func run(log *slog.Logger) error {
 		type item struct {
 			Source     string `json:"source"`
 			Repository string `json:"repository"`
-			ManifestEntry
+			lore.ManifestEntry
 		}
 		items := make([]item, 0, len(manifest))
-		for _, p := range orderedPaths(manifest) {
-			name, _ := RepositoryName(p)
+		for _, p := range lore.OrderedPaths(manifest) {
+			name, _ := lore.RepositoryName(p)
 			items = append(items, item{p, name, manifest[p]})
 		}
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(items)
 	}
-	health := newHealthState()
-	metrics, shutdownMetrics, err := startTelemetry(ctx, os.Getenv("GOOGLE_CLOUD_PROJECT"), health)
+	health := observe.NewHealth(time.Now)
+	metrics, shutdownMetrics, err := observe.StartTelemetry(ctx, os.Getenv("GOOGLE_CLOUD_PROJECT"), health)
 	if err != nil {
 		return fmt.Errorf("initialize metrics: %w", err)
 	}
@@ -110,16 +71,16 @@ func run(log *slog.Logger) error {
 			log.Error("metrics_shutdown_failed", "error", err)
 		}
 	}()
-	token, err := tokenSource(ctx, client)
+	token, err := gh.TokenSource(ctx, client)
 	if err != nil {
 		return err
 	}
-	github := &GitHub{Client: client, Org: cfg.org, Token: token}
-	relay := &Relay{Client: client, MaxPushBytes: cfg.maxPushBytes, metrics: metrics, health: health}
+	github := &gh.GitHub{Client: client, Org: cfg.Org, Token: token}
+	relay := &Relay{Client: client, MaxPushBytes: cfg.MaxPushBytes, metrics: metrics, health: health}
 	// The single worker owns these caches. Restarting simply rechecks the API.
-	repositories := map[string]Repository{}
+	repositories := map[string]gh.Repository{}
 	defaultBranches := map[string]string{}
-	syncRepo := func(ctx context.Context, sourcePath string, entry ManifestEntry) error {
+	syncRepo := func(ctx context.Context, sourcePath string, entry lore.ManifestEntry) error {
 		repository, exists := repositories[sourcePath]
 		if !exists {
 			var err error
@@ -129,8 +90,8 @@ func run(log *slog.Logger) error {
 			}
 			repositories[sourcePath] = repository
 		}
-		health.progress("sync")
-		sourceURL, err := SourceRepositoryURL(cfg.source, sourcePath)
+		health.Progress("sync")
+		sourceURL, err := lore.SourceRepositoryURL(cfg.Source, sourcePath)
 		if err != nil {
 			return err
 		}
@@ -138,7 +99,7 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		health.progress("sync")
+		health.Progress("sync")
 		result, err := relay.Sync(ctx, sourceURL, repository.GitURL, credential)
 		if err != nil {
 			delete(repositories, sourcePath)
@@ -155,8 +116,8 @@ func run(log *slog.Logger) error {
 			"changed", result.Changed, "refs", len(result.SourceRefs), "bytes", result.Bytes)
 		return nil
 	}
-	daemon := daemon{fetch: fetch, sync: syncRepo, log: log, metrics: metrics, health: health, poll: cfg.poll, rescan: cfg.rescan, timeout: cfg.timeout}
-	shutdownHealth, healthFailures, err := startHealthServer(health)
+	daemon := daemon{fetch: fetch, sync: syncRepo, log: log, metrics: metrics, health: health, poll: cfg.Poll, rescan: cfg.Rescan, timeout: cfg.Timeout}
+	shutdownHealth, healthFailures, err := observe.StartHealthServer(health)
 	if err != nil {
 		return fmt.Errorf("start health server: %w", err)
 	}
@@ -167,10 +128,10 @@ func run(log *slog.Logger) error {
 			log.Error("health_server_shutdown_failed", "error", err)
 		}
 	}()
-	log.Info("starting", "source", cfg.source, "org", cfg.org, "once", cfg.once)
+	log.Info("starting", "source", cfg.Source, "org", cfg.Org, "once", cfg.Once)
 	finished := make(chan error, 1)
 	go func() {
-		if cfg.once {
+		if cfg.Once {
 			finished <- daemon.runOnce(ctx)
 		} else {
 			finished <- daemon.run(ctx)
@@ -179,7 +140,7 @@ func run(log *slog.Logger) error {
 	select {
 	case err = <-finished:
 	case err = <-healthFailures:
-		stop()
+		cancel()
 		<-finished
 		return fmt.Errorf("health server stopped: %w", err)
 	}
@@ -189,18 +150,18 @@ func run(log *slog.Logger) error {
 	return err
 }
 
-func (c config) validate() error {
-	u, err := url.Parse(c.source)
+func (c Config) validate() error {
+	u, err := url.Parse(c.Source)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return errors.New("-source must be an HTTPS origin without credentials, path, query, or fragment")
 	}
-	if c.poll <= 0 || c.rescan <= 0 || c.timeout <= 0 {
+	if c.Poll <= 0 || c.Rescan <= 0 || c.Timeout <= 0 {
 		return errors.New("poll, rescan, and timeout must be positive")
 	}
-	if c.maxPushBytes <= 0 || c.maxPushBytes >= 2*(1<<30) {
+	if c.MaxPushBytes <= 0 || c.MaxPushBytes >= 2*(1<<30) {
 		return errors.New("max-push-bytes must be positive and less than 2 GiB")
 	}
-	if !c.discover && (c.org == "" || strings.ContainsAny(c.org, "/\\ .:@?#")) {
+	if !c.Discover && (c.Org == "" || strings.ContainsAny(c.Org, "/\\ .:@?#")) {
 		return errors.New("set -org or GITHUB_ORG to the dedicated GitHub organization")
 	}
 	return nil

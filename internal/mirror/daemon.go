@@ -1,4 +1,4 @@
-package main
+package mirror
 
 import (
 	"context"
@@ -6,22 +6,23 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"sort"
-	"strings"
 	"time"
+
+	"lore-mirror/internal/lore"
+	"lore-mirror/internal/observe"
 )
 
 type daemon struct {
-	fetch                 func(context.Context) (Manifest, error)
-	sync                  func(context.Context, string, ManifestEntry) error
+	fetch                 func(context.Context) (lore.Manifest, error)
+	sync                  func(context.Context, string, lore.ManifestEntry) error
 	log                   *slog.Logger
-	metrics               *telemetry
-	health                *healthState
+	metrics               *observe.Telemetry
+	health                *observe.Health
 	poll, rescan, timeout time.Duration
 }
 
 type work struct {
-	entry     ManifestEntry
+	entry     lore.ManifestEntry
 	done      bool
 	failures  int
 	next      time.Time
@@ -30,7 +31,7 @@ type work struct {
 
 // Only successful manifests reach the worker. Failed discovery never empties
 // the inventory, and a busy transfer cannot block discovery.
-func (d *daemon) pollManifests(ctx context.Context, updates chan Manifest) {
+func (d *daemon) pollManifests(ctx context.Context, updates chan lore.Manifest) {
 	for {
 		manifest, err := d.discover(ctx)
 		if err != nil {
@@ -63,12 +64,12 @@ func (d *daemon) pollManifests(ctx context.Context, updates chan Manifest) {
 func (d *daemon) run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	updates := make(chan Manifest, 1)
+	updates := make(chan lore.Manifest, 1)
 	pollerDone := make(chan struct{})
 	go func() { defer close(pollerDone); d.pollManifests(ctx, updates) }()
 	defer func() { cancel(); <-pollerDone }()
 	queue := map[string]*work{}
-	defer d.metrics.queue(0)
+	defer d.metrics.Queue(0)
 	nextRescan := time.Now().Add(d.rescan)
 	var cooldown time.Time
 	for {
@@ -102,7 +103,7 @@ func (d *daemon) run(ctx context.Context) error {
 		if path != "" {
 			pending-- // The active transfer is represented by worker activity.
 		}
-		d.metrics.queue(pending)
+		d.metrics.Queue(pending)
 		if path != "" {
 			item := queue[path]
 			item.attempted = now
@@ -145,13 +146,13 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer d.metrics.queue(0)
+	defer d.metrics.Queue(0)
 	failed := 0
-	for index, path := range orderedPaths(manifest) {
+	for index, path := range lore.OrderedPaths(manifest) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		d.metrics.queue(int64(len(manifest) - index - 1))
+		d.metrics.Queue(int64(len(manifest) - index - 1))
 		err := d.syncWork(ctx, path, manifest[path])
 		if err != nil {
 			failed++
@@ -169,29 +170,29 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	return nil
 }
 
-func (d *daemon) discover(ctx context.Context) (Manifest, error) {
-	finish := d.health.begin("discovery")
+func (d *daemon) discover(ctx context.Context) (lore.Manifest, error) {
+	finish := d.health.Begin("discovery")
 	defer finish()
 	started := time.Now()
 	manifest, err := d.fetch(ctx)
-	d.metrics.operation(ctx, "discovery", started, err)
+	d.metrics.Operation(ctx, "discovery", started, err)
 	return manifest, err
 }
 
-func (d *daemon) syncWork(ctx context.Context, path string, entry ManifestEntry) error {
+func (d *daemon) syncWork(ctx context.Context, path string, entry lore.ManifestEntry) error {
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
-	finish := d.health.begin("sync")
+	finish := d.health.Begin("sync")
 	defer finish()
-	d.metrics.busy(true)
-	defer d.metrics.busy(false)
+	d.metrics.Busy(true)
+	defer d.metrics.Busy(false)
 	started := time.Now()
 	err := d.sync(ctx, path, entry)
-	d.metrics.operation(ctx, "sync", started, err)
+	d.metrics.Operation(ctx, "sync", started, err)
 	return err
 }
 
-func reconcile(queue map[string]*work, manifest Manifest) {
+func reconcile(queue map[string]*work, manifest lore.Manifest) {
 	for path := range queue {
 		if _, exists := manifest[path]; !exists {
 			delete(queue, path)
@@ -272,57 +273,4 @@ func minTime(a, b time.Time) time.Time {
 
 func jitter(delay time.Duration) time.Duration {
 	return delay + time.Duration(rand.Float64()*float64(delay)/10)
-}
-
-func orderedPaths(manifest Manifest) []string {
-	paths := make([]string, 0, len(manifest))
-	for path := range manifest {
-		paths = append(paths, path)
-	}
-	sort.Slice(paths, func(i, j int) bool {
-		if manifest[paths[i]].Modified != manifest[paths[j]].Modified {
-			return manifest[paths[i]].Modified > manifest[paths[j]].Modified
-		}
-		return paths[i] < paths[j]
-	})
-	return paths
-}
-
-func selectManifest(manifest Manifest, lists string) (Manifest, error) {
-	selected := map[string]bool{}
-	if lists != "" {
-		for _, list := range strings.Split(lists, ",") {
-			list = strings.TrimSpace(list)
-			if _, err := RepositoryName("/" + list); err != nil {
-				return nil, fmt.Errorf("invalid inbox %q: %w", list, err)
-			}
-			selected[list] = false
-		}
-	}
-	result := Manifest{}
-	names := map[string]string{}
-	for path, entry := range manifest {
-		name, err := RepositoryName(path)
-		if err != nil {
-			return nil, err
-		}
-		if previous, exists := names[name]; exists {
-			return nil, fmt.Errorf("repository name collision: %q and %q map to %q", previous, path, name)
-		}
-		names[name] = path
-		list := strings.Split(strings.TrimPrefix(path, "/"), "/")[0]
-		if len(selected) > 0 {
-			if _, ok := selected[list]; !ok {
-				continue
-			}
-			selected[list] = true
-		}
-		result[path] = entry
-	}
-	for list, found := range selected {
-		if !found {
-			return nil, fmt.Errorf("selected inbox %q is absent from manifest", list)
-		}
-	}
-	return result, nil
 }

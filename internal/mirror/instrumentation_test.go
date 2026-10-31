@@ -1,4 +1,4 @@
-package main
+package mirror
 
 import (
 	"context"
@@ -10,14 +10,17 @@ import (
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"lore-mirror/internal/lore"
+	"lore-mirror/internal/observe"
 )
 
-func instrumentationMeter(t *testing.T) (*telemetry, *sdkmetric.ManualReader) {
+func instrumentationMeter(t *testing.T) (*observe.Telemetry, *sdkmetric.ManualReader) {
 	t.Helper()
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
-	metrics, err := newTelemetry(provider.Meter("instrumentation-test"), nil)
+	metrics, err := observe.NewTelemetry(provider.Meter("instrumentation-test"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,10 +46,10 @@ func TestDaemonRecordsOperationsAndWorkerState(t *testing.T) {
 	metrics, reader := instrumentationMeter(t)
 	attempts := 0
 	d := daemon{
-		fetch: func(context.Context) (Manifest, error) {
-			return Manifest{"/first/git/0.git": {Modified: 2}, "/second/git/0.git": {Modified: 1}}, nil
+		fetch: func(context.Context) (lore.Manifest, error) {
+			return lore.Manifest{"/first/git/0.git": {Modified: 2}, "/second/git/0.git": {Modified: 1}}, nil
 		},
-		sync: func(context.Context, string, ManifestEntry) error {
+		sync: func(context.Context, string, lore.ManifestEntry) error {
 			observed := collectInstrumentation(t, reader)
 			for name, want := range map[string]int64{
 				"lore_mirror_worker_busy": 1,
@@ -148,23 +151,23 @@ func TestRelayCountsFailedAndSuccessfulStreamingBytes(t *testing.T) {
 func TestTelemetryDisabledAndLabelsBounded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	disabled, shutdown, err := startTelemetry(ctx, "", nil)
+	disabled, shutdown, err := observe.StartTelemetry(ctx, "", nil)
 	if err != nil || disabled != nil {
 		t.Fatalf("disabled telemetry required cloud access: %v %v", disabled, err)
 	}
-	disabled.operation(ctx, "sync", time.Now(), nil)
-	disabled.queue(1)
-	disabled.busy(true)
-	disabled.addBytes(ctx, "send", 1)
+	disabled.Operation(ctx, "sync", time.Now(), nil)
+	disabled.Queue(1)
+	disabled.Busy(true)
+	disabled.AddBytes(ctx, "send", 1)
 	if err := shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
 	metrics, reader := instrumentationMeter(t)
-	metrics.operation(ctx, "/private/repo.git", time.Now(), nil)
-	metrics.operation(ctx, "sync", time.Now(), context.Canceled)
-	metrics.operation(ctx, "sync", time.Now(), context.DeadlineExceeded)
-	metrics.addBytes(ctx, "https://private.example/", 100)
-	metrics.addBytes(ctx, "send", -100)
+	metrics.Operation(ctx, "/private/repo.git", time.Now(), nil)
+	metrics.Operation(ctx, "sync", time.Now(), context.Canceled)
+	metrics.Operation(ctx, "sync", time.Now(), context.DeadlineExceeded)
+	metrics.AddBytes(ctx, "https://private.example/", 100)
+	metrics.AddBytes(ctx, "send", -100)
 	observed := collectInstrumentation(t, reader)
 	points := observed["lore_mirror_operations"].Data.(metricdata.Sum[int64]).DataPoints
 	results := map[string]int64{}
@@ -187,47 +190,46 @@ func TestTelemetryDisabledAndLabelsBounded(t *testing.T) {
 }
 
 func TestDaemonHealthTracksProgressWithoutTelemetry(t *testing.T) {
-	health := newHealthState()
 	now := time.Now()
-	health.now = func() time.Time { return now }
+	health := observe.NewHealth(func() time.Time { return now })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d := daemon{health: health, timeout: time.Hour}
-	d.fetch = func(context.Context) (Manifest, error) {
+	d.fetch = func(context.Context) (lore.Manifest, error) {
 		now = now.Add(6 * time.Minute)
-		if !health.stuck() {
+		if !health.Stuck() {
 			t.Fatal("discovery did not mark active work")
 		}
 		return nil, context.Canceled
 	}
-	if _, err := d.discover(ctx); !errors.Is(err, context.Canceled) || health.stuck() {
+	if _, err := d.discover(ctx); !errors.Is(err, context.Canceled) || health.Stuck() {
 		t.Fatalf("discovery cancellation retained active work: %v", err)
 	}
-	d.sync = func(ctx context.Context, _ string, _ ManifestEntry) error {
+	d.sync = func(ctx context.Context, _ string, _ lore.ManifestEntry) error {
 		now = now.Add(6 * time.Minute)
-		if !health.stuck() {
+		if !health.Stuck() {
 			t.Fatal("sync did not mark active work")
 		}
 		reader := relayCountingReader{Reader: strings.NewReader("progress"), health: health}
-		if _, err := io.ReadAll(&reader); err != nil || health.stuck() {
+		if _, err := io.ReadAll(&reader); err != nil || health.Stuck() {
 			t.Fatalf("received bytes did not refresh progress: %v", err)
 		}
 		now = now.Add(6 * time.Minute)
-		if _, err := reader.Read(make([]byte, 1)); err != io.EOF || !health.stuck() {
+		if _, err := reader.Read(make([]byte, 1)); err != io.EOF || !health.Stuck() {
 			t.Fatal("EOF without bytes incorrectly refreshed progress")
 		}
 		writer := relayLimitedWriter{w: io.Discard, limit: 100, health: health}
-		if _, err := writer.Write([]byte("progress")); err != nil || health.stuck() {
+		if _, err := writer.Write([]byte("progress")); err != nil || health.Stuck() {
 			t.Fatalf("sent bytes did not refresh progress: %v", err)
 		}
 		cancel()
 		return ctx.Err()
 	}
-	if err := d.syncWork(ctx, "/test/git/0.git", ManifestEntry{}); !errors.Is(err, context.Canceled) || health.stuck() {
+	if err := d.syncWork(ctx, "/test/git/0.git", lore.ManifestEntry{}); !errors.Is(err, context.Canceled) || health.Stuck() {
 		t.Fatalf("sync cancellation retained active work: %v", err)
 	}
 	now = now.Add(time.Hour)
-	if health.stuck() {
+	if health.Stuck() {
 		t.Fatal("idle worker was reported stuck")
 	}
 }

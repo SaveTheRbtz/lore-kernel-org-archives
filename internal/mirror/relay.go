@@ -1,4 +1,4 @@
-package main
+package mirror
 
 import (
 	"bytes"
@@ -19,6 +19,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/sideband"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+
+	"lore-mirror/internal/observe"
 )
 
 const defaultMaxPushBytes int64 = 7 << 28 // 1.75 GiB, including update commands.
@@ -31,8 +33,8 @@ type Relay struct {
 	Client       *http.Client
 	MaxPushBytes int64
 	AllowHTTP    bool // Only for local protocol tests.
-	metrics      *telemetry
-	health       *healthState
+	metrics      *observe.Telemetry
+	health       *observe.Health
 }
 
 type SyncResult struct {
@@ -71,12 +73,12 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 	if err != nil {
 		return result, fmt.Errorf("advertise source: %w", err)
 	}
-	r.health.progress("sync")
+	r.health.Progress("sync")
 	dst, err := down.AdvertisedReferencesContext(ctx)
 	if err != nil {
 		return result, fmt.Errorf("advertise destination: %w", err)
 	}
-	r.health.progress("sync")
+	r.health.Progress("sync")
 	if err := relayCheckFormat(src); err != nil {
 		return result, fmt.Errorf("source: %w", err)
 	}
@@ -146,7 +148,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 		if fetchErr != nil {
 			return result, fmt.Errorf("upload-pack: %w", fetchErr)
 		}
-		r.health.progress("sync")
+		r.health.Progress("sync")
 		defer response.Close()
 		var pack io.Reader = response
 		if fetch.Capabilities.Supports(capability.Sideband64k) {
@@ -169,12 +171,12 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 	if err != nil {
 		return result, err
 	}
-	r.health.progress("sync")
+	r.health.Progress("sync")
 	verified, err := down.AdvertisedReferencesContext(ctx)
 	if err != nil {
 		return result, fmt.Errorf("verify destination: %w", err)
 	}
-	r.health.progress("sync")
+	r.health.Progress("sync")
 	verifiedRefs, err := relayRefs(verified, false)
 	if err != nil {
 		return result, err
@@ -286,15 +288,15 @@ type relayReadCloser struct {
 type relayCountingReader struct {
 	io.Reader
 	ctx     context.Context
-	metrics *telemetry
-	health  *healthState
+	metrics *observe.Telemetry
+	health  *observe.Health
 }
 
 func (r *relayCountingReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
-	r.metrics.addBytes(r.ctx, "receive", int64(n))
+	r.metrics.AddBytes(r.ctx, "receive", int64(n))
 	if n > 0 {
-		r.health.progress("sync")
+		r.health.Progress("sync")
 	}
 	return n, err
 }
@@ -310,8 +312,8 @@ type relayLimitedWriter struct {
 	limit   int64
 	n       int64
 	ctx     context.Context
-	metrics *telemetry
-	health  *healthState
+	metrics *observe.Telemetry
+	health  *observe.Health
 }
 
 func (w *relayLimitedWriter) Write(p []byte) (int, error) {
@@ -325,9 +327,9 @@ func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 	}
 	n, err := w.w.Write(p)
 	w.n += int64(n)
-	w.metrics.addBytes(w.ctx, "send", int64(n))
+	w.metrics.AddBytes(w.ctx, "send", int64(n))
 	if n > 0 {
-		w.health.progress("sync")
+		w.health.Progress("sync")
 	}
 	if err == nil && tooLarge {
 		err = ErrPushTooLarge
@@ -335,7 +337,7 @@ func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func relayReceivePack(ctx context.Context, client *http.Client, destination, token string, update *packp.ReferenceUpdateRequest, limit int64, metrics *telemetry, health *healthState) (int64, error) {
+func relayReceivePack(ctx context.Context, client *http.Client, destination, token string, update *packp.ReferenceUpdateRequest, limit int64, metrics *observe.Telemetry, health *observe.Health) (int64, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reader, writer := io.Pipe()

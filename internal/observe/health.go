@@ -1,4 +1,4 @@
-package main
+package observe
 
 import (
 	"context"
@@ -14,13 +14,13 @@ const stuckAfter = 5 * time.Minute
 
 // Discovery and sync run independently. Idle time and retry backoff are healthy;
 // only an active operation that stops making progress can become stuck.
-type healthState struct {
+type Health struct {
 	mu   sync.Mutex
 	last [2]time.Time
 	now  func() time.Time
 }
 
-func newHealthState() *healthState { return &healthState{now: time.Now} }
+func NewHealth(now func() time.Time) *Health { return &Health{now: now} }
 
 func healthActivity(operation string) int {
 	switch operation {
@@ -33,7 +33,7 @@ func healthActivity(operation string) int {
 	}
 }
 
-func (h *healthState) begin(operation string) func() {
+func (h *Health) Begin(operation string) func() {
 	index := healthActivity(operation)
 	if h == nil || index < 0 {
 		return func() {}
@@ -48,7 +48,7 @@ func (h *healthState) begin(operation string) func() {
 	}
 }
 
-func (h *healthState) progress(operation string) {
+func (h *Health) Progress(operation string) {
 	index := healthActivity(operation)
 	if h == nil || index < 0 {
 		return
@@ -60,7 +60,7 @@ func (h *healthState) progress(operation string) {
 	h.mu.Unlock()
 }
 
-func (h *healthState) stuck() bool {
+func (h *Health) Stuck() bool {
 	if h == nil {
 		return false
 	}
@@ -75,14 +75,14 @@ func (h *healthState) stuck() bool {
 	return false
 }
 
-func (h *healthState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *Health) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/healthz" {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	if h.stuck() {
+	if h.Stuck() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("stuck\n"))
 		return
@@ -92,7 +92,7 @@ func (h *healthState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Bind before returning so a port conflict fails startup. The caller monitors
 // failures and calls shutdown with a fresh context when the daemon exits.
-func startHealthServer(health *healthState) (func(context.Context) error, <-chan error, error) {
+func StartHealthServer(health *Health) (func(context.Context) error, <-chan error, error) {
 	listener, err := net.Listen("tcp", ":8080")
 	if err != nil {
 		return nil, nil, fmt.Errorf("health listener: %w", err)
