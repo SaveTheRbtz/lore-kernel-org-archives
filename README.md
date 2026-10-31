@@ -71,7 +71,7 @@ gcloud compute ssh VM_NAME --project=kernelorg-mirror --zone=us-central1-a \
 
 Application logs are in [Cloud Logging](https://console.cloud.google.com/logs/query?project=kernelorg-mirror). OpenTelemetry metrics are in [Cloud Monitoring](https://console.cloud.google.com/monitoring?project=kernelorg-mirror), under `prometheus.googleapis.com/lore_mirror_*`. Use them to track sync latency, throughput, errors, pending work, worker utilization, and Go memory. Metrics are exported every minute and have no per-repository labels.
 
-On the VM, `curl -f http://127.0.0.1:8080/healthz` checks health. An active discovery or sync with no progress for five minutes returns HTTP 503 and sets `lore_mirror_stuck` to 1. Idle time and retry backoff stay healthy. GCP probes this endpoint every 30 seconds and recreates the VM after three failed checks, with a five-minute startup grace period. The firewall permits port 8080 only from GCP health-check ranges.
+On the VM, `curl -f http://127.0.0.1:8080/healthz` checks health. With an explicit `lists` setting, it returns HTTP 503 until the first valid manifest confirms every requested inbox. If an inbox is missing, the worker exits with an error. An active discovery or sync with no progress for five minutes returns HTTP 503 and sets `lore_mirror_stuck` to 1. After startup, idle time and retry backoff stay healthy. GCP probes this endpoint every 30 seconds and recreates the VM after three failed checks, with a five-minute startup grace period. The firewall permits port 8080 only from GCP health-check ranges.
 
 Health transitions are recorded in Cloud Logging:
 

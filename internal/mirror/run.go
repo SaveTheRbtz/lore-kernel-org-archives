@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	gh "lore-mirror/internal/github"
@@ -29,13 +30,14 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	client := newHTTPClient()
-	selected := false
+	var selectionReady atomic.Bool
+	selectionReady.Store(cfg.Lists == "")
 	fetch := func(ctx context.Context) (lore.Manifest, error) {
 		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
-		manifest, err := lore.FetchManifest(ctx, client, log, cfg.Lists, !selected)
+		manifest, err := lore.FetchManifest(ctx, client, log, cfg.Lists, !selectionReady.Load())
 		if err == nil {
-			selected = true
+			selectionReady.Store(true)
 		}
 		return manifest, err
 	}
@@ -58,7 +60,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(items)
 	}
-	health := &observe.Health{}
+	health := &observe.Health{Ready: selectionReady.Load}
 	metrics, shutdownMetrics, err := observe.StartTelemetry(ctx, os.Getenv("GOOGLE_CLOUD_PROJECT"), health)
 	if err != nil {
 		return fmt.Errorf("initialize metrics: %w", err)
@@ -159,5 +161,5 @@ func (c Config) validate() error {
 	if c.MaxPushBytes <= 0 || c.MaxPushBytes >= 2*(1<<30) {
 		return errors.New("max-push-bytes must be positive and less than 2 GiB")
 	}
-	return nil
+	return lore.ValidateLists(c.Lists)
 }

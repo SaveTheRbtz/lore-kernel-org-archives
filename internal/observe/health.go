@@ -15,8 +15,10 @@ const stuckAfter = 5 * time.Minute
 // Discovery and sync run independently. Idle time and retry backoff are healthy;
 // only an active operation that stops making progress can become stuck.
 type Health struct {
-	mu   sync.Mutex
-	last [2]time.Time
+	// Ready, when set, reports whether startup validation has finished.
+	Ready func() bool
+	mu    sync.Mutex
+	last  [2]time.Time
 }
 
 func healthActivity(operation string) int {
@@ -79,6 +81,10 @@ func (h *Health) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	if h != nil && h.Ready != nil && !h.Ready() {
+		http.Error(w, "starting", http.StatusServiceUnavailable)
+		return
+	}
 	if h.Stuck() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("stuck\n"))

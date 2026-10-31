@@ -18,7 +18,9 @@ variable "lists" {
   type        = string
   default     = ""
   validation {
-    condition     = can(regex("^[A-Za-z0-9._,-]*$", var.lists))
-    error_message = "List names may contain letters, numbers, dots, underscores and hyphens, separated by commas."
+    condition = var.lists == "" || alltrue([
+      for name in split(",", var.lists) : can(regex("^[A-Za-z0-9][A-Za-z0-9._-]*$", name))
+    ])
+    error_message = "Use an empty string for all inboxes or comma-separated names. Each name must start with a letter or digit and contain only letters, digits, dots, underscores, or hyphens."
   }
 }

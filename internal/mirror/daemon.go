@@ -32,12 +32,15 @@ type work struct {
 
 // Only successful manifests reach the worker. Failed discovery never empties
 // the inventory, and a busy transfer cannot block discovery.
-func (d *daemon) pollManifests(ctx context.Context, updates chan lore.Manifest) {
+func (d *daemon) pollManifests(ctx context.Context, updates chan lore.Manifest) error {
 	for {
 		manifest, err := d.discover(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return
+				return ctx.Err()
+			}
+			if errors.Is(err, lore.ErrUnknownInbox) {
+				return err
 			}
 			d.log.Error("discovery_failed", "error", err)
 		} else {
@@ -49,14 +52,14 @@ func (d *daemon) pollManifests(ctx context.Context, updates chan lore.Manifest) 
 			select {
 			case updates <- manifest:
 			case <-ctx.Done():
-				return
+				return ctx.Err()
 			}
 		}
 		timer := time.NewTimer(jitter(d.recheck))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return
+			return ctx.Err()
 		case <-timer.C:
 		}
 	}
@@ -66,7 +69,11 @@ func (d *daemon) run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	updates := make(chan lore.Manifest, 1)
 	pollerDone := make(chan struct{})
-	go func() { defer close(pollerDone); d.pollManifests(ctx, updates) }()
+	var pollerErr error
+	go func() {
+		defer close(pollerDone)
+		pollerErr = d.pollManifests(ctx, updates)
+	}()
 	finished := make(chan error, 1)
 	var active *work
 	var activePath string
@@ -113,6 +120,8 @@ func (d *daemon) run(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
+		case <-pollerDone:
+			return pollerErr
 		case manifest := <-updates:
 			d.reconcile(queue, manifest)
 		case err := <-finished:

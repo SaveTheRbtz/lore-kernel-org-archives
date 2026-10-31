@@ -2,12 +2,30 @@ package lore
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"iter"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 )
+
+var ErrUnknownInbox = errors.New("selected inbox is absent from manifest")
+
+var inboxName = regexp.MustCompile(`^` + listNamePattern + `$`)
+
+func ValidateLists(lists string) error {
+	if lists == "" {
+		return nil
+	}
+	for list := range strings.SplitSeq(lists, ",") {
+		if !inboxName.MatchString(strings.TrimSpace(list)) {
+			return fmt.Errorf("invalid inbox name %q in -lists", list)
+		}
+	}
+	return nil
+}
 
 func OrderedPaths(manifest Manifest) []string {
 	return slices.SortedFunc(maps.Keys(manifest), func(a, b string) int {
@@ -42,7 +60,7 @@ func selectManifest(manifest Manifest, advertised iter.Seq[string], lists string
 	}
 	for list, found := range selected {
 		if requireAll && !found {
-			return nil, fmt.Errorf("selected inbox %q is absent from manifest", list)
+			return nil, fmt.Errorf("%w: %q", ErrUnknownInbox, list)
 		}
 	}
 	return result, nil
