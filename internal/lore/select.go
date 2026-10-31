@@ -15,16 +15,20 @@ var ErrUnknownInbox = errors.New("selected inbox is absent from manifest")
 
 var inboxNamePattern = regexp.MustCompile(`^` + listNamePattern + `$`)
 
-func ValidateLists(lists string) error {
+// ParseLists validates the comma-separated inbox selection. An empty selection mirrors all inboxes.
+func ParseLists(lists string) ([]string, error) {
 	if lists == "" {
-		return nil
+		return nil, nil
 	}
+	var names []string
 	for list := range strings.SplitSeq(lists, ",") {
-		if !inboxNamePattern.MatchString(strings.TrimSpace(list)) {
-			return fmt.Errorf("invalid inbox name %q in -lists", list)
+		name := strings.TrimSpace(list)
+		if !inboxNamePattern.MatchString(name) {
+			return nil, fmt.Errorf("invalid inbox name %q in -lists", list)
 		}
+		names = append(names, name)
 	}
-	return nil
+	return names, nil
 }
 
 func OrderedPaths(manifest Manifest) []string {
@@ -38,13 +42,13 @@ func OrderedPaths(manifest Manifest) []string {
 
 // Filter the owned manifest in place. Check requested inbox names against every advertised path, including archives
 // we skipped. Only supported epochs can appear in the result.
-func selectManifest(manifest Manifest, advertised iter.Seq[string], lists string, requireAll bool) (Manifest, error) {
-	if lists == "" {
+func selectManifest(manifest Manifest, advertised iter.Seq[string], lists []string, requireAll bool) (Manifest, error) {
+	if len(lists) == 0 {
 		return manifest, nil
 	}
-	selected := map[string]bool{}
-	for _, list := range strings.Split(lists, ",") {
-		selected[strings.TrimSpace(list)] = false
+	selected := make(map[string]bool, len(lists))
+	for _, list := range lists {
+		selected[list] = false
 	}
 	for path := range advertised {
 		list := InboxName(path)
@@ -54,9 +58,11 @@ func selectManifest(manifest Manifest, advertised iter.Seq[string], lists string
 			delete(manifest, path)
 		}
 	}
-	for list, found := range selected {
-		if requireAll && !found {
-			return nil, fmt.Errorf("%w: %q", ErrUnknownInbox, list)
+	if requireAll {
+		for list, found := range selected {
+			if !found {
+				return nil, fmt.Errorf("%w: %q", ErrUnknownInbox, list)
+			}
 		}
 	}
 	return manifest, nil

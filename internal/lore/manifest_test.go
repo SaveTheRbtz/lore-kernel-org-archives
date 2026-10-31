@@ -44,7 +44,11 @@ func fetchResponse(t *testing.T, status int, body []byte, log *slog.Logger, list
 		_, _ = w.Write(body)
 	})
 	server := httptest.NewTestServer(t, mux)
-	return FetchManifest(t.Context(), server.Client(), log, lists, true)
+	names, err := ParseLists(lists)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return FetchManifest(t.Context(), server.Client(), log, names, true)
 }
 
 func TestFetchManifest(t *testing.T) {
@@ -171,7 +175,7 @@ func TestFetchManifestCancelsActiveRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { _, err := FetchManifest(ctx, client, slog.Default(), "", true); done <- err }()
+	go func() { _, err := FetchManifest(ctx, client, slog.Default(), nil, true); done <- err }()
 	select {
 	case <-started:
 		cancel()

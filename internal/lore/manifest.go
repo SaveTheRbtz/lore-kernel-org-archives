@@ -47,7 +47,7 @@ func (e ManifestEntry) Summary(sourcePath, address string) string {
 }
 
 // FetchManifest skips unsharded archives and rejects malformed inventories.
-func FetchManifest(ctx context.Context, client *http.Client, log *slog.Logger, lists string, requireAll bool) (Manifest, error) {
+func FetchManifest(ctx context.Context, client *http.Client, log *slog.Logger, lists []string, requireAll bool) (Manifest, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, Origin+"/manifest.js.gz", nil)
 	if err != nil {
 		return nil, err
@@ -85,7 +85,7 @@ func FetchManifest(ctx context.Context, client *http.Client, log *slog.Logger, l
 	return manifestFromEntries(raw, log, lists, requireAll)
 }
 
-func manifestFromEntries(raw map[string]jsontext.Value, log *slog.Logger, lists string, requireAll bool) (Manifest, error) {
+func manifestFromEntries(raw map[string]jsontext.Value, log *slog.Logger, lists []string, requireAll bool) (Manifest, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("manifest is empty")
 	}

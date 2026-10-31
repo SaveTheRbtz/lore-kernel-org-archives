@@ -28,16 +28,20 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
+	lists, err := lore.ParseLists(cfg.Lists)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	client := newHTTPClient()
 	defer client.CloseIdleConnections()
 	var selectionReady atomic.Bool
-	selectionReady.Store(cfg.Lists == "")
+	selectionReady.Store(len(lists) == 0)
 	fetch := func(ctx context.Context) (lore.Manifest, error) {
 		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
-		manifest, err := lore.FetchManifest(ctx, client, log, cfg.Lists, !selectionReady.Load())
+		manifest, err := lore.FetchManifest(ctx, client, log, lists, !selectionReady.Load())
 		if err == nil {
 			selectionReady.Store(true)
 		}
@@ -161,5 +165,5 @@ func (c Config) validate() error {
 	if c.MaxPushBytes <= 0 || c.MaxPushBytes >= 2*(1<<30) {
 		return errors.New("max-push-bytes must be positive and less than 2 GiB")
 	}
-	return lore.ValidateLists(c.Lists)
+	return nil
 }
