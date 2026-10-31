@@ -97,24 +97,22 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	}
 	defer shutdown(log, "health_server_shutdown_failed", 5*time.Second, shutdownHealth)
 	log.Info("starting", "source", lore.Origin, "org", cfg.Org, "once", cfg.Once)
+	run := daemon.run
+	if cfg.Once {
+		run = daemon.runOnce
+	}
 	finished := make(chan error, 1)
-	go func() {
-		if cfg.Once {
-			finished <- daemon.runOnce(ctx)
-		} else {
-			finished <- daemon.run(ctx)
-		}
-	}()
+	go func() { finished <- run(ctx) }()
 	select {
-	case err = <-finished:
-	case err = <-healthFailures:
+	case err := <-finished:
+		if !cfg.Once && errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	case err := <-healthFailures:
 		cancel()
 		return errors.Join(fmt.Errorf("health server stopped: %w", err), <-finished)
 	}
-	if !cfg.Once && errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
 }
 
 func shutdown(log *slog.Logger, failureEvent string, timeout time.Duration, stop func(context.Context) error) {
