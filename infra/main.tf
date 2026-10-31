@@ -49,13 +49,13 @@ resource "google_service_account" "build" {
 resource "google_project_iam_member" "logs_runtime" {
   project = "kernelorg-mirror"
   role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.runtime.email}"
+  member  = google_service_account.runtime.member
 }
 
 resource "google_project_iam_member" "logs_build" {
   project = "kernelorg-mirror"
   role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.build.email}"
+  member  = google_service_account.build.member
 }
 
 resource "google_project_iam_member" "telemetry" {
@@ -65,7 +65,7 @@ resource "google_project_iam_member" "telemetry" {
   ])
   project = "kernelorg-mirror"
   role    = each.key
-  member  = "serviceAccount:${google_service_account.runtime.email}"
+  member  = google_service_account.runtime.member
 }
 
 resource "google_artifact_registry_repository" "images" {
@@ -86,14 +86,14 @@ resource "google_artifact_registry_repository_iam_member" "runtime" {
   location   = google_artifact_registry_repository.images.location
   repository = google_artifact_registry_repository.images.name
   role       = "roles/artifactregistry.reader"
-  member     = "serviceAccount:${google_service_account.runtime.email}"
+  member     = google_service_account.runtime.member
 }
 
 resource "google_artifact_registry_repository_iam_member" "build" {
   location   = google_artifact_registry_repository.images.location
   repository = google_artifact_registry_repository.images.name
   role       = "roles/artifactregistry.writer"
-  member     = "serviceAccount:${google_service_account.build.email}"
+  member     = google_service_account.build.member
 }
 
 resource "google_secret_manager_secret" "github_app" {
@@ -114,7 +114,7 @@ resource "google_secret_manager_secret" "github_app" {
 resource "google_secret_manager_secret_iam_member" "runtime" {
   secret_id = google_secret_manager_secret.github_app.id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.runtime.email}"
+  member    = google_service_account.runtime.member
 }
 
 resource "google_storage_bucket" "source" {
@@ -141,7 +141,7 @@ resource "google_storage_bucket" "source" {
 resource "google_storage_bucket_iam_member" "build_source" {
   bucket = google_storage_bucket.source.name
   role   = "roles/storage.objectViewer"
-  member = "serviceAccount:${google_service_account.build.email}"
+  member = google_service_account.build.member
 }
 
 resource "google_compute_network" "mirror" {
