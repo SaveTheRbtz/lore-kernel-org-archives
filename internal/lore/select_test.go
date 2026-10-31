@@ -22,7 +22,7 @@ func TestSelectManifestKeepsAutomaticallyMirroredEpochs(t *testing.T) {
 		{"lkml", Manifest{"/lkml/git/0.git": oldEpoch, "/lkml/git/2.git": newEpoch}},
 		{" cgroups, lkml ", Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/2.git": newEpoch}},
 	} {
-		got, err := selectManifest(manifest, maps.Keys(manifest), test.lists, true)
+		got, err := selectManifest(maps.Clone(manifest), maps.Keys(manifest), test.lists, true)
 		if err != nil || !maps.Equal(got, test.want) {
 			t.Errorf("select %q = %v, %v; want %v", test.lists, got, err, test.want)
 		}
