@@ -3,7 +3,7 @@ set -euo pipefail
 
 # COS supplies this credential helper; it gets tokens from the VM identity.
 mkdir -p -m 0700 /run/lore-mirror-docker
-printf '%s\n' '{"credHelpers":{"${registry}":"gcr"}}' > /run/lore-mirror-docker/config.json
+printf '%s\n' '{"credHelpers":{"${split("/", image)[0]}":"gcr"}}' > /run/lore-mirror-docker/config.json
 
 cat > /etc/systemd/system/lore-mirror.service <<'EOF'
 [Unit]

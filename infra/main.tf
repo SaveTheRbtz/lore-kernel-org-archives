@@ -244,7 +244,6 @@ resource "google_compute_instance_template" "mirror" {
       image             = var.image
       lists             = var.lists
       project           = local.project
-      registry          = "${local.region}-docker.pkg.dev"
       github_app_secret = local.github_app_secret
     })
   }
