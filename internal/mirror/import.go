@@ -92,7 +92,7 @@ func (s *relaySession) importCheckpoints(ctx context.Context, refs map[string]pl
 		}
 		s.batches++
 		if s.log != nil {
-			s.log.Info("import_checkpoint", "source", s.source.String(), "checkpoint", index+1, "total", len(plan), "commit", plan[index])
+			s.log.Info("import_checkpoint", "source", s.source.String(), "checkpoint", index+1, "total", len(plan), "commit", plan[index].String())
 		}
 	}
 	// A previous attempt can have published the tip but not its metadata refs.
