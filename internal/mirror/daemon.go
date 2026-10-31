@@ -96,7 +96,7 @@ func (d *daemon) run(ctx context.Context) error {
 			entry := active.entry
 			activeEntry = entry
 			workers.Go(func() { finished <- d.syncWork(ctx, path, entry) })
-			continue
+			pending--
 		}
 		d.queue(pending)
 		if cooldown.After(now) && (wake.IsZero() || cooldown.Before(wake)) {
