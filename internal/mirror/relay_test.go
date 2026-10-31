@@ -519,6 +519,44 @@ func TestReceivePackOwnsSource(t *testing.T) {
 	}
 }
 
+func TestReceivePackDropsProgressCutOffByReportLimit(t *testing.T) {
+	const token = "test-token"
+	const prefix = "test-toke"
+	var wire bytes.Buffer
+	mux := sideband.NewMuxer(sideband.Sideband64k, &wire)
+	// Each progress packet has a four-byte length and a one-byte channel.
+	padding := bytes.Repeat([]byte{' '}, (16<<10)-5)
+	for range 63 {
+		if _, err := mux.WriteChannel(sideband.ProgressMessage, padding); err != nil {
+			t.Fatal(err)
+		}
+	}
+	copy(padding[len(padding)-len(prefix):], prefix)
+	if _, err := mux.WriteChannel(sideband.ProgressMessage, padding); err != nil {
+		t.Fatal(err)
+	}
+	if wire.Len() != 1<<20 {
+		t.Fatalf("cutoff after %d bytes", wire.Len())
+	}
+	if _, err := mux.WriteChannel(sideband.ProgressMessage, []byte(token[len(prefix):])); err != nil {
+		t.Fatal(err)
+	}
+	receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
+		_, _ = w.Write(wire.Bytes())
+	}))
+	relay := Relay{Client: relayTestClient(receiver), MaxPushBytes: 4096}
+	update := testUpdate(t, nil)
+	if err := update.Capabilities.Set(capability.Sideband64k); err != nil {
+		t.Fatal(err)
+	}
+	_, err := relay.receivePack(t.Context(), "https://example.com", token, update)
+	if err == nil || strings.Contains(err.Error(), prefix) || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("unsafe or missing protocol error: %v", err)
+	}
+}
+
 func TestReceivePackOmitsTruncatedHTTPDiagnostics(t *testing.T) {
 	const token = "test-token"
 	for name, credential := range map[string]string{"token": token, "basic": "eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg=="} {

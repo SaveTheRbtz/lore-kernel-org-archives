@@ -146,7 +146,7 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	return limited.n, &redactedGitError{message: message, cause: cause}
 }
 
-func (r *Relay) readReceivePackResponse(response *http.Response, update *packp.ReferenceUpdateRequest, remote io.Writer) error {
+func (r *Relay) readReceivePackResponse(response *http.Response, update *packp.ReferenceUpdateRequest, remote *strings.Builder) error {
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		message, readErr := io.ReadAll(io.LimitReader(response.Body, maxDiagnosticBytes+1))
@@ -161,7 +161,8 @@ func (r *Relay) readReceivePackResponse(response *http.Response, update *packp.R
 	if contentType != "application/x-git-receive-pack-result" {
 		return fmt.Errorf("unexpected receive-pack content type %q", contentType)
 	}
-	var body io.Reader = io.LimitReader(response.Body, 1<<20)
+	wire := &io.LimitedReader{R: response.Body, N: 1 << 20}
+	var body io.Reader = wire
 	if update.Capabilities.Supports(capability.Sideband64k) {
 		demux := sideband.NewDemuxer(sideband.Sideband64k, body)
 		demux.Progress = io.MultiWriter(relayProgress{r.health}, remote)
@@ -169,6 +170,11 @@ func (r *Relay) readReceivePackResponse(response *http.Response, update *packp.R
 	}
 	report := packp.NewReportStatus()
 	if err := report.Decode(body); err != nil {
+		// Incomplete progress can end in a prefix of a credential.
+		remote.Reset()
+		if wire.N == 0 {
+			return &redactedGitError{message: "receive-pack status reached the 1 MiB limit", cause: err}
+		}
 		return fmt.Errorf("receive-pack status: %w", err)
 	}
 	return relayCheckReport(report, update.Commands)
