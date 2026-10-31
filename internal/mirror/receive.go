@@ -94,16 +94,12 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	request.Header.Set("Content-Type", "application/x-git-receive-pack-request")
 	request.Header.Set("Accept", "application/x-git-receive-pack-result")
 	request.Header.Set("User-Agent", "lore-mirror")
-	type encodedResult struct {
-		n   int64
-		err error
-	}
-	done := make(chan encodedResult, 1)
+	limited := &relayLimitedWriter{w: writer, limit: r.MaxPushBytes, metrics: r.metrics, health: r.health}
+	done := make(chan error, 1)
 	go func() {
-		limited := &relayLimitedWriter{w: writer, limit: r.MaxPushBytes, metrics: r.metrics, health: r.health}
 		err := update.Encode(limited)
 		writer.CloseWithError(err)
-		done <- encodedResult{limited.n, err}
+		done <- err
 	}()
 	var remote bytes.Buffer
 	response, receiveErr := r.Client.Do(request)
@@ -141,10 +137,10 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	if update.Packfile != nil {
 		_ = update.Packfile.Close()
 	}
-	encoded := <-done
-	cause := errors.Join(receiveErr, encoded.err, ctx.Err())
+	encodeErr := <-done
+	cause := errors.Join(receiveErr, encodeErr, ctx.Err())
 	if cause == nil {
-		return encoded.n, nil
+		return limited.n, nil
 	}
 	// Redact before truncating, including credentials split across sidebands.
 	message := redactGitCredentials(cause.Error(), token)
@@ -158,7 +154,7 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	if detail != "" {
 		message += "\nremote: " + detail
 	}
-	return encoded.n, &redactedGitError{message: message, cause: cause}
+	return limited.n, &redactedGitError{message: message, cause: cause}
 }
 
 func relayCheckReport(report *packp.ReportStatus, commands []*packp.Command) error {
