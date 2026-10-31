@@ -165,24 +165,19 @@ func TestFetchManifestBoundsValidPayloads(t *testing.T) {
 }
 
 func TestFetchManifestCancelsActiveRequest(t *testing.T) {
-	started := make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	server := httptest.NewTestServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		close(started)
+		cancel()
 		<-r.Context().Done()
 	}))
 	client := server.Client()
 	client.Timeout = 5 * time.Second
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { _, err := FetchManifest(ctx, client, slog.Default(), nil, true); done <- err }()
-	select {
-	case <-started:
-		cancel()
-	case err := <-done:
-		t.Fatalf("request failed before cancellation: %v", err)
+	_, err := FetchManifest(ctx, client, slog.Default(), nil, true)
+	if ctx.Err() == nil {
+		t.Fatalf("request returned before reaching the server: %v", err)
 	}
-	if err := <-done; !errors.Is(err, context.Canceled) {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled request returned %v", err)
 	}
 }
