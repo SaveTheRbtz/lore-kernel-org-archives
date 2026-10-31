@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/mail"
-	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/format/config"
@@ -20,8 +19,7 @@ import (
 func FetchAddress(ctx context.Context, client *http.Client, sourcePath string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	inbox, _, _ := strings.Cut(strings.TrimPrefix(sourcePath, "/"), "/")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, Origin+"/"+inbox+"/_/text/config/raw", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, Origin+"/"+InboxName(sourcePath)+"/_/text/config/raw", nil)
 	if err != nil {
 		return "", err
 	}

@@ -77,8 +77,7 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath string, summar
 		return Repository{}, err
 	}
 	sourceURL := lore.Origin + sourcePath
-	list, _, _ := strings.Cut(sourcePath[1:], "/")
-	listURL := lore.Origin + "/" + list + "/"
+	listURL := lore.Origin + "/" + lore.InboxName(sourcePath) + "/"
 	desc := mirrorDescriptionPrefix + sourceURL
 	if summary != nil && *summary != "" {
 		desc += ": " + *summary

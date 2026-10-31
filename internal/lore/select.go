@@ -13,14 +13,14 @@ import (
 
 var ErrUnknownInbox = errors.New("selected inbox is absent from manifest")
 
-var inboxName = regexp.MustCompile(`^` + listNamePattern + `$`)
+var inboxNamePattern = regexp.MustCompile(`^` + listNamePattern + `$`)
 
 func ValidateLists(lists string) error {
 	if lists == "" {
 		return nil
 	}
 	for list := range strings.SplitSeq(lists, ",") {
-		if !inboxName.MatchString(strings.TrimSpace(list)) {
+		if !inboxNamePattern.MatchString(strings.TrimSpace(list)) {
 			return fmt.Errorf("invalid inbox name %q in -lists", list)
 		}
 	}
@@ -48,7 +48,7 @@ func selectManifest(manifest Manifest, advertised iter.Seq[string], lists string
 		selected[strings.TrimSpace(list)] = false
 	}
 	for path := range advertised {
-		list, _, _ := strings.Cut(path[1:], "/")
+		list := InboxName(path)
 		if _, ok := selected[list]; ok {
 			selected[list] = true
 		} else {

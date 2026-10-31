@@ -120,12 +120,10 @@ func manifestFromEntries(raw map[string]jsontext.Value, log *slog.Logger, lists 
 			return nil, fmt.Errorf("manifest entry %q has no valid modified timestamp", path)
 		}
 		manifest[path] = ManifestEntry{Fingerprint: entry.Fingerprint, Modified: *entry.Modified, Description: entry.Description}
-		list, _, _ := strings.Cut(path[1:], "/")
-		epochs[list]++
+		epochs[InboxName(path)]++
 	}
 	for path, entry := range manifest {
-		list, _, _ := strings.Cut(path[1:], "/")
-		entry.Epochs = epochs[list]
+		entry.Epochs = epochs[InboxName(path)]
 		manifest[path] = entry
 	}
 	// lkml.1 is maintained manually because GitHub rejects the NUL in
@@ -141,6 +139,12 @@ var (
 	unshardedPathPattern = regexp.MustCompile(`^/` + listNamePattern + `$`)
 	sourcePathPattern    = regexp.MustCompile(`^/(` + listNamePattern + `)/git/(0|[1-9][0-9]*)\.git$`)
 )
+
+// InboxName returns the case-preserving inbox component of a Lore manifest path.
+func InboxName(path string) string {
+	name, _, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	return name
+}
 
 // RepositoryName reserves a deterministic, case-insensitive GitHub namespace.
 func RepositoryName(sourcePath string) (string, error) {
