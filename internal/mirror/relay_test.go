@@ -480,6 +480,24 @@ func TestReceivePackEarlyRejectionClosesBlockedSourceAndRedactsToken(t *testing.
 	}
 }
 
+func TestReceivePackOmitsTruncatedHTTPDiagnostics(t *testing.T) {
+	const token = "test-token"
+	for name, credential := range map[string]string{"token": token, "basic": "eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg=="} {
+		t.Run(name, func(t *testing.T) {
+			prefix := credential[:len(credential)-1]
+			receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				http.Error(w, strings.Repeat(" ", 4096-len(prefix))+credential, http.StatusForbidden)
+			}))
+			relay := Relay{Client: relayTestClient(receiver), MaxPushBytes: 4096}
+			_, err := relay.receivePack(t.Context(), "https://example.com", token, testUpdate(t, nil))
+			if err == nil || !strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), prefix) {
+				t.Fatalf("unsafe or missing HTTP diagnostic: %v", err)
+			}
+		})
+	}
+}
+
 func TestReceivePackPreservesRetryAfter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		for _, tc := range []struct {

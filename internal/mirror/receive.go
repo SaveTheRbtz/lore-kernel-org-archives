@@ -110,7 +110,11 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 	response, receiveErr := r.Client.Do(request)
 	if receiveErr == nil {
 		if response.StatusCode != http.StatusOK {
-			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			message, readErr := io.ReadAll(io.LimitReader(response.Body, 4097))
+			if readErr != nil || len(message) > 4096 {
+				// A partial credential cannot be matched by the redactor.
+				message = []byte("[body omitted]")
+			}
 			receiveErr = fmt.Errorf("receive-pack HTTP %d (protocol=%s, request_id=%s): %s",
 				response.StatusCode, response.Proto, response.Header.Get("X-GitHub-Request-Id"), strings.TrimSpace(string(message)))
 		} else if contentType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type")); contentType != "application/x-git-receive-pack-result" {
