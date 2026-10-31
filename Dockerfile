@@ -5,8 +5,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-RUN go test ./... \
-    && go vet ./... \
+RUN go test -vet=all ./... \
     && go build -buildvcs=false -trimpath -ldflags='-s -w' -o /lore-mirror ./cmd/lore-mirror
 
 FROM gcr.io/distroless/static-debian13:nonroot
