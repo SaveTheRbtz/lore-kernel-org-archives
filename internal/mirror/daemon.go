@@ -123,10 +123,11 @@ func (d *daemon) run(ctx context.Context) error {
 				}
 			} else if ctx.Err() == nil {
 				active.failures++
-				delay := retryDelay(err, active.failures)
-				if serverRetryAfter(err) > 0 {
+				retryAfter := serverRetryAfter(err)
+				delay := retryDelay(err, active.failures, retryAfter)
+				if retryAfter > 0 {
 					throttles++
-					pause := retryDelay(err, throttles)
+					pause := retryDelay(err, throttles, retryAfter)
 					cooldown = now.Add(pause)
 					delay = max(delay, pause)
 				}
@@ -242,7 +243,7 @@ func nextWork(queue map[string]*work, now time.Time, active string) (chosen stri
 	return chosen, wake, pending
 }
 
-func retryDelay(err error, failures int) time.Duration {
+func retryDelay(err error, failures int, retryAfter time.Duration) time.Duration {
 	if errors.Is(err, ErrPushTooLarge) {
 		return 24 * time.Hour
 	}
@@ -250,14 +251,7 @@ func retryDelay(err error, failures int) time.Duration {
 	for i := 1; i < failures && delay < time.Hour; i++ {
 		delay *= 2
 	}
-	if delay > time.Hour {
-		delay = time.Hour
-	}
-	delay = jitter(delay)
-	if pause := serverRetryAfter(err); pause > delay {
-		delay = pause
-	}
-	return delay
+	return max(jitter(min(delay, time.Hour)), retryAfter)
 }
 
 func serverRetryAfter(err error) time.Duration {
