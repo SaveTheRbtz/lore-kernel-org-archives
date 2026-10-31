@@ -52,13 +52,15 @@ func FetchAddress(ctx context.Context, client *http.Client, sourcePath string) (
 	if len(inboxes) != 1 {
 		return "", errors.New("inbox config contains multiple inboxes")
 	}
-	addresses := inboxes[0].OptionAll("address")
-	if len(addresses) == 0 {
-		return "", nil
+	for _, option := range inboxes[0].Options {
+		if !option.IsKey("address") {
+			continue
+		}
+		address, err := mail.ParseAddress(option.Value)
+		if err != nil {
+			return "", fmt.Errorf("invalid primary inbox address: %w", err)
+		}
+		return address.Address, nil
 	}
-	address, err := mail.ParseAddress(addresses[0])
-	if err != nil {
-		return "", fmt.Errorf("invalid primary inbox address: %w", err)
-	}
-	return address.Address, nil
+	return "", nil
 }
