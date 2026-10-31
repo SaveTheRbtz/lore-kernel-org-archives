@@ -116,7 +116,8 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 	oldRef := "refs/heads/" + currentDefault
 	deletingCurrentDefault := destinationRefs[oldRef] != plumbing.ZeroHash && result.SourceRefs[oldRef] == plumbing.ZeroHash
 	firstTarget := result.SourceRefs
-	if changingDefault && deletingCurrentDefault {
+	staged := changingDefault && deletingCurrentDefault
+	if staged {
 		// GitHub rejects deletion of its current default. Publish only the replacement first.
 		firstTarget = maps.Clone(destinationRefs)
 		newRef := "refs/heads/" + result.DefaultBranch
@@ -131,6 +132,9 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token, curr
 			return result, fmt.Errorf("set default branch to %q: %w", result.DefaultBranch, err)
 		}
 		r.health.Progress("sync")
+	}
+	if !staged {
+		return result, nil
 	}
 	n, changed, err := session.reconcile(ctx, result.SourceRefs)
 	result.Bytes += n
