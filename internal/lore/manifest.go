@@ -1,7 +1,6 @@
 package lore
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/hex"
@@ -65,38 +64,28 @@ func FetchManifest(ctx context.Context, client *http.Client, log *slog.Logger, l
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch manifest: HTTP %s", resp.Status)
 	}
-	compressed, err := readManifestBytes(resp.Body, maxManifestCompressed)
-	if err != nil {
-		return nil, fmt.Errorf("read compressed manifest: %w", err)
-	}
-	zr, err := gzip.NewReader(bytes.NewReader(compressed))
+	compressed := &io.LimitedReader{R: resp.Body, N: maxManifestCompressed + 1}
+	zr, err := gzip.NewReader(compressed)
 	if err != nil {
 		return nil, fmt.Errorf("open gzip manifest: %w", err)
 	}
 	defer func() { _ = zr.Close() }()
-	expanded, err := readManifestBytes(zr, maxManifestExpanded)
-	if err != nil {
-		return nil, fmt.Errorf("expand manifest: %w", err)
-	}
-	return decodeManifest(expanded, log, lists, requireAll)
-}
-
-func readManifestBytes(r io.Reader, limit int64) ([]byte, error) {
-	b, err := io.ReadAll(io.LimitReader(r, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(b)) > limit {
-		return nil, fmt.Errorf("exceeds %d-byte limit", limit)
-	}
-	return b, nil
-}
-
-func decodeManifest(b []byte, log *slog.Logger, lists string, requireAll bool) (Manifest, error) {
+	expanded := &io.LimitedReader{R: zr, N: maxManifestExpanded + 1}
 	var raw map[string]jsontext.Value
-	if err := json.Unmarshal(b, &raw); err != nil {
+	err = json.UnmarshalRead(expanded, &raw)
+	if compressed.N == 0 {
+		return nil, fmt.Errorf("compressed manifest exceeds %d-byte limit", maxManifestCompressed)
+	}
+	if expanded.N == 0 {
+		return nil, fmt.Errorf("expanded manifest exceeds %d-byte limit", maxManifestExpanded)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("decode manifest: %w", err)
 	}
+	return manifestFromEntries(raw, log, lists, requireAll)
+}
+
+func manifestFromEntries(raw map[string]jsontext.Value, log *slog.Logger, lists string, requireAll bool) (Manifest, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("manifest is empty")
 	}
