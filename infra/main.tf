@@ -260,7 +260,6 @@ resource "google_compute_instance_template" "mirror" {
 resource "google_compute_instance_group_manager" "mirror" {
   name                      = "lore-mirror"
   base_instance_name        = "lore-mirror"
-  zone                      = local.zone
   target_size               = var.enabled ? 1 : 0
   wait_for_instances        = true
   wait_for_instances_status = "UPDATED"
