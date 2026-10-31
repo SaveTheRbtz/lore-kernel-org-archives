@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/sideband"
 
 	"lore-mirror/internal/observe"
 )
@@ -27,9 +30,11 @@ type relayLimitedWriter struct {
 type receivePackError struct {
 	status  int
 	message string
+	cause   error
 }
 
 func (e *receivePackError) Error() string { return e.message }
+func (e *receivePackError) Unwrap() error { return e.cause }
 
 func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 	remaining := w.limit - w.n
@@ -53,6 +58,7 @@ func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 }
 
 func (r *Relay) receivePack(ctx context.Context, destination, token string, update *packp.ReferenceUpdateRequest) (int64, error) {
+	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reader, writer := io.Pipe()
@@ -81,22 +87,26 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 		writer.CloseWithError(err)
 		done <- encodedResult{limited.n, err}
 	}()
+	var remote bytes.Buffer
+	status := 0
 	response, receiveErr := r.Client.Do(request)
 	if receiveErr == nil {
+		status = response.StatusCode
 		if response.StatusCode != http.StatusOK {
 			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-			text := fmt.Sprintf("receive-pack HTTP %d (protocol=%s, request_id=%s): %s",
+			receiveErr = fmt.Errorf("receive-pack HTTP %d (protocol=%s, request_id=%s): %s",
 				response.StatusCode, response.Proto, response.Header.Get("X-GitHub-Request-Id"), strings.TrimSpace(string(message)))
-			if token != "" {
-				text = strings.ReplaceAll(text, token, "[redacted]")
-				text = strings.ReplaceAll(text, base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token)), "[redacted]")
-			}
-			receiveErr = &receivePackError{status: response.StatusCode, message: text}
 		} else if contentType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type")); contentType != "application/x-git-receive-pack-result" {
 			receiveErr = fmt.Errorf("unexpected receive-pack content type %q", contentType)
 		} else {
+			body := io.LimitReader(response.Body, 1<<20)
+			if update.Capabilities.Supports(capability.Sideband64k) {
+				demux := sideband.NewDemuxer(sideband.Sideband64k, body)
+				demux.Progress = io.MultiWriter(relayProgress{r.health}, &remote)
+				body = demux
+			}
 			report := packp.NewReportStatus()
-			if err := report.Decode(io.LimitReader(response.Body, 1<<20)); err != nil {
+			if err := report.Decode(body); err != nil {
 				receiveErr = fmt.Errorf("receive-pack status: %w", err)
 			} else {
 				receiveErr = relayCheckReport(report, update.Commands)
@@ -112,7 +122,26 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 		_ = update.Packfile.Close()
 	}
 	encoded := <-done
-	return encoded.n, errors.Join(receiveErr, encoded.err)
+	cause := errors.Join(receiveErr, encoded.err, parent.Err())
+	if cause == nil {
+		return encoded.n, nil
+	}
+	message, detail := cause.Error(), strings.TrimSpace(remote.String())
+	if token != "" {
+		redact := strings.NewReplacer(token, "[redacted]", base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token)), "[redacted]")
+		message, detail = redact.Replace(message), redact.Replace(detail)
+	}
+	// Redact before truncating, including credentials split across sidebands.
+	if len(message) > 4096 {
+		message = message[:4096]
+	}
+	if len(detail) > 4096 {
+		detail = detail[len(detail)-4096:]
+	}
+	if detail != "" {
+		message += "\nremote: " + detail
+	}
+	return encoded.n, &receivePackError{status: status, message: message, cause: cause}
 }
 
 func relayCheckReport(report *packp.ReportStatus, commands []*packp.Command) error {

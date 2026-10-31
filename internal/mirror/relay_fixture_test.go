@@ -45,6 +45,7 @@ type relayTestServer struct {
 	beforePack  func(http.ResponseWriter) error
 	beforeHTTP  func(http.ResponseWriter, *http.Request) bool
 	failSource  bool
+	receiveBand bool
 	omitStatus  bool
 	skipUpdate  bool
 }
@@ -135,6 +136,9 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 				return sessionErr
 			}
 			adv, err = session.AdvertisedReferencesContext(r.Context())
+			if err == nil && s.receiveBand {
+				err = adv.Capabilities.Set(capability.Sideband64k)
+			}
 		}
 		if err != nil {
 			return err
@@ -233,6 +237,21 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 		if err := req.Decode(r.Body); err != nil {
 			return err
 		}
+		useSideband := req.Capabilities.Supports(capability.Sideband64k)
+		writeReport := func(report *packp.ReportStatus) error {
+			w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
+			if !useSideband {
+				return report.Encode(w)
+			}
+			mux := sideband.NewMuxer(sideband.Sideband64k, w)
+			if _, err := mux.WriteChannel(sideband.ProgressMessage, []byte("checking received objects\n")); err != nil {
+				return err
+			}
+			if err := report.Encode(mux); err != nil {
+				return err
+			}
+			return pktline.NewEncoder(w).Flush()
+		}
 		if s.rejectPush != nil && s.rejectPush(req) {
 			if _, err := io.Copy(io.Discard, r.Body); err != nil {
 				return err
@@ -256,8 +275,7 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 				if _, err := io.Copy(io.Discard, r.Body); err != nil {
 					return err
 				}
-				w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
-				return (&packp.ReportStatus{UnpackStatus: "ok", CommandStatuses: []*packp.CommandStatus{{ReferenceName: command.Name, Status: "stale old object ID"}}}).Encode(w)
+				return writeReport(&packp.ReportStatus{UnpackStatus: "ok", CommandStatuses: []*packp.CommandStatus{{ReferenceName: command.Name, Status: "stale old object ID"}}})
 			}
 		}
 		allDelete := true
@@ -279,6 +297,7 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 			return err
 		}
 		var report *packp.ReportStatus
+		req.Capabilities.Delete(capability.Sideband64k)
 		if s.skipUpdate {
 			if _, err := io.Copy(io.Discard, r.Body); err != nil {
 				return err
@@ -299,8 +318,7 @@ func (s *relayTestServer) handleHTTP(w http.ResponseWriter, r *http.Request) err
 		if s.omitStatus && len(report.CommandStatuses) > 0 {
 			report.CommandStatuses = report.CommandStatuses[:len(report.CommandStatuses)-1]
 		}
-		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
-		return report.Encode(w)
+		return writeReport(report)
 	}
 	http.NotFound(w, r)
 	return nil

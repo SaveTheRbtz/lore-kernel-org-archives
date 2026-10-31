@@ -24,6 +24,13 @@ import (
 
 func TestRelayInitialIncrementalAndRefChanges(t *testing.T) {
 	s := newRelayTestServer(t)
+	s.receiveBand = true
+	s.rejectPush = func(req *packp.ReferenceUpdateRequest) bool {
+		if !req.Capabilities.Supports(capability.Sideband64k) {
+			t.Error("receiver sideband diagnostics were not requested")
+		}
+		return false
+	}
 	first := relayTestCommit(t, s.source, "first mail")
 	relayTestSetRef(t, s.source, "refs/heads/master", first)
 	relayTestSetRef(t, s.source, "refs/meta/origins", first)
@@ -358,27 +365,76 @@ func (p *blockedPack) Read([]byte) (int, error) {
 func (p *blockedPack) Close() error { p.closeOnce.Do(func() { close(p.closed) }); return nil }
 
 func TestReceivePackEarlyRejectionClosesBlockedSourceAndRedactsToken(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		pack := newBlockedPack()
-		receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			<-pack.started
-			w.Header().Set("Connection", "close")
-			w.Header().Set("X-GitHub-Request-Id", "failed-push-id")
-			http.Error(w, "rejected test-token eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg==", http.StatusForbidden)
-			w.(http.Flusher).Flush()
-		}))
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		relay := Relay{Client: relayTestClient(receiver), MaxPushBytes: 4096}
-		_, err := relay.receivePack(ctx, "https://example.com", "test-token", testUpdate(t, pack))
-		if err == nil || strings.Contains(err.Error(), "test-token") || strings.Contains(err.Error(), "eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg==") ||
-			!strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "request_id=failed-push-id") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if ctx.Err() != nil {
-			t.Fatal("early rejection waited for the job timeout")
-		}
-	})
+	const leaked = "test-token eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg=="
+	for _, test := range []struct {
+		name     string
+		sideband bool
+		reply    func(http.ResponseWriter) error
+		want     []string
+	}{
+		{
+			name: "HTTP rejection", want: []string{"403", "request_id=failed-push-id"},
+			reply: func(w http.ResponseWriter) error {
+				http.Error(w, "rejected "+leaked, http.StatusForbidden)
+				return nil
+			},
+		},
+		{
+			name: "remote fatal error", sideband: true, want: []string{"invalid Git object [redacted]"},
+			reply: func(w http.ResponseWriter) error {
+				_, err := sideband.NewMuxer(sideband.Sideband64k, w).WriteChannel(sideband.ErrorMessage, []byte("invalid Git object "+leaked))
+				return err
+			},
+		},
+		{
+			name: "unpack rejection with remote context", sideband: true,
+			want: []string{"unpack error: rejected [redacted]", "remote: detailed receiver failure [redacted]"},
+			reply: func(w http.ResponseWriter) error {
+				mux := sideband.NewMuxer(sideband.Sideband64k, w)
+				for _, chunk := range []string{"detailed receiver failure test-", "token eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg==\n"} {
+					if _, err := mux.WriteChannel(sideband.ProgressMessage, []byte(chunk)); err != nil {
+						return err
+					}
+				}
+				return (&packp.ReportStatus{UnpackStatus: "rejected " + leaked}).Encode(mux)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				pack := newBlockedPack()
+				receiver := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					<-pack.started
+					w.Header().Set("Connection", "close")
+					w.Header().Set("X-GitHub-Request-Id", "failed-push-id")
+					w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
+					if err := test.reply(w); err != nil {
+						t.Error(err)
+					}
+					w.(http.Flusher).Flush()
+				}))
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				relay := Relay{Client: relayTestClient(receiver), MaxPushBytes: 4096}
+				update := testUpdate(t, pack)
+				if test.sideband {
+					_ = update.Capabilities.Set(capability.Sideband64k)
+				}
+				_, err := relay.receivePack(ctx, "https://example.com", "test-token", update)
+				if err == nil || strings.Contains(err.Error(), "test-token") || strings.Contains(err.Error(), "eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg==") {
+					t.Fatalf("missing or unsafe error: %v", err)
+				}
+				for _, want := range test.want {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not include %q", err, want)
+					}
+				}
+				if ctx.Err() != nil {
+					t.Fatal("early rejection waited for the job timeout")
+				}
+			})
+		})
+	}
 }
 
 func TestReceivePackPreservesRetryAfter(t *testing.T) {

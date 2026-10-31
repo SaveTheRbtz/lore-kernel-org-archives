@@ -143,6 +143,9 @@ func (s *relaySession) sync(ctx context.Context, refs map[string]plumbing.Hash) 
 	update := packp.NewReferenceUpdateRequest()
 	update.Commands = commands
 	_ = update.Capabilities.Set(capability.ReportStatus)
+	if s.dst.Capabilities.Supports(capability.Sideband64k) {
+		_ = update.Capabilities.Set(capability.Sideband64k)
+	}
 	if s.dst.Capabilities.Supports(capability.Atomic) {
 		_ = update.Capabilities.Set(capability.Atomic)
 	}
