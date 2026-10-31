@@ -5,9 +5,12 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"regexp"
@@ -25,32 +28,27 @@ type ManifestEntry struct {
 	Fingerprint string `json:"fingerprint"`
 	Modified    int64  `json:"modified"`
 	Description string `json:"description"`
-	Epochs      int    `json:"epochs,omitempty"`
+	Epochs      int    `json:"epochs"`
 }
 
 type Manifest map[string]ManifestEntry
 
 // Summary adds the posting address and the epoch's one-based position.
 func (e ManifestEntry) Summary(sourcePath, address string) string {
-	_, epoch, numeric := strings.Cut(sourcePath[1:], "/git/")
+	_, epoch, _ := strings.Cut(sourcePath[1:], "/git/")
+	epoch = strings.TrimSuffix(epoch, ".git")
 	description := strings.TrimSpace(e.Description)
-	if numeric {
-		epoch = strings.TrimSuffix(epoch, ".git")
-		description = strings.TrimSpace(strings.TrimSuffix(description, "[epoch "+epoch+"]"))
-	}
+	description = strings.TrimSpace(strings.TrimSuffix(description, "[epoch "+epoch+"]"))
 	if address != "" {
 		description += " <" + address + ">"
 	}
-	if numeric {
-		number, _ := strconv.ParseUint(epoch, 10, 64) // Validated by RepositoryName.
-		description += fmt.Sprintf(" (%d out of %d)", number+1, e.Epochs)
-	}
+	number, _ := strconv.ParseUint(epoch, 10, 64) // Validated by RepositoryName.
+	description += fmt.Sprintf(" (%d out of %d)", number+1, e.Epochs)
 	return strings.TrimSpace(description)
 }
 
-// FetchManifest retrieves one complete inventory. A bad entry invalidates the
-// entire response, so a partial inventory never replaces the last good one.
-func FetchManifest(ctx context.Context, client *http.Client) (Manifest, error) {
+// FetchManifest skips unsharded archives and rejects malformed inventories.
+func FetchManifest(ctx context.Context, client *http.Client, log *slog.Logger, lists string, requireAll bool) (Manifest, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, Origin+"/manifest.js.gz", nil)
 	if err != nil {
 		return nil, err
@@ -80,7 +78,7 @@ func FetchManifest(ctx context.Context, client *http.Client) (Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("expand manifest: %w", err)
 	}
-	return decodeManifest(expanded)
+	return decodeManifest(expanded, log, lists, requireAll)
 }
 
 func readManifestBytes(r io.Reader, limit int64) ([]byte, error) {
@@ -94,12 +92,8 @@ func readManifestBytes(r io.Reader, limit int64) ([]byte, error) {
 	return b, nil
 }
 
-func decodeManifest(b []byte) (Manifest, error) {
-	var raw map[string]struct {
-		Fingerprint *string `json:"fingerprint"`
-		Modified    *int64  `json:"modified"`
-		Description string  `json:"description"`
-	}
+func decodeManifest(b []byte, log *slog.Logger, lists string, requireAll bool) (Manifest, error) {
+	var raw map[string]jsontext.Value
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return nil, fmt.Errorf("decode manifest: %w", err)
 	}
@@ -109,7 +103,11 @@ func decodeManifest(b []byte) (Manifest, error) {
 	manifest := make(Manifest, len(raw))
 	names := make(map[string]string, len(raw))
 	epochs := make(map[string]int)
-	for path, entry := range raw {
+	for path, data := range raw {
+		if unshardedPathPattern.MatchString(path) {
+			log.Warn("unsharded_archive_skipped", "source", path)
+			continue
+		}
 		name, err := RepositoryName(path)
 		if err != nil {
 			return nil, fmt.Errorf("manifest repository: %w", err)
@@ -118,6 +116,14 @@ func decodeManifest(b []byte) (Manifest, error) {
 			return nil, fmt.Errorf("repository name collision: %q and %q map to %q", previous, path, name)
 		}
 		names[name] = path
+		var entry struct {
+			Fingerprint *string `json:"fingerprint"`
+			Modified    *int64  `json:"modified"`
+			Description string  `json:"description"`
+		}
+		if err := json.Unmarshal(data, &entry); err != nil {
+			return nil, fmt.Errorf("decode manifest entry %q: %w", path, err)
+		}
 		if entry.Fingerprint == nil || len(*entry.Fingerprint) != 40 {
 			return nil, fmt.Errorf("manifest entry %q has no valid fingerprint", path)
 		}
@@ -128,20 +134,23 @@ func decodeManifest(b []byte) (Manifest, error) {
 			return nil, fmt.Errorf("manifest entry %q has no valid modified timestamp", path)
 		}
 		manifest[path] = ManifestEntry{Fingerprint: *entry.Fingerprint, Modified: *entry.Modified, Description: entry.Description}
-		if list, _, numeric := strings.Cut(path[1:], "/git/"); numeric {
-			epochs[list]++
-		}
+		list, _, _ := strings.Cut(path[1:], "/")
+		epochs[list]++
 	}
 	for path, entry := range manifest {
-		if list, _, numeric := strings.Cut(path[1:], "/git/"); numeric {
-			entry.Epochs = epochs[list]
-			manifest[path] = entry
-		}
+		list, _, _ := strings.Cut(path[1:], "/")
+		entry.Epochs = epochs[list]
+		manifest[path] = entry
 	}
-	return manifest, nil
+	return selectManifest(manifest, maps.Keys(raw), lists, requireAll)
 }
 
-var sourcePathPattern = regexp.MustCompile(`^/([A-Za-z0-9][A-Za-z0-9._-]*)(?:/git/(0|[1-9][0-9]*)\.git)?$`)
+const listNamePattern = `[A-Za-z0-9][A-Za-z0-9._-]*`
+
+var (
+	unshardedPathPattern = regexp.MustCompile(`^/` + listNamePattern + `$`)
+	sourcePathPattern    = regexp.MustCompile(`^/(` + listNamePattern + `)/git/(0|[1-9][0-9]*)\.git$`)
+)
 
 // RepositoryName reserves a deterministic, case-insensitive GitHub namespace.
 func RepositoryName(sourcePath string) (string, error) {
@@ -150,9 +159,7 @@ func RepositoryName(sourcePath string) (string, error) {
 		return "", fmt.Errorf("unsupported source repository path %q", sourcePath)
 	}
 	epoch := parts[2]
-	if epoch == "" {
-		epoch = "v1"
-	} else if number, err := strconv.ParseUint(epoch, 10, 64); err != nil || number == math.MaxUint64 {
+	if number, err := strconv.ParseUint(epoch, 10, 64); err != nil || number == math.MaxUint64 {
 		return "", fmt.Errorf("unsupported epoch in source repository path %q", sourcePath)
 	}
 	name := strings.ToLower(parts[1]) + "." + epoch

@@ -32,11 +32,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	fetch := func(ctx context.Context) (lore.Manifest, error) {
 		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
-		manifest, err := lore.FetchManifest(ctx, client)
-		if err != nil {
-			return nil, err
-		}
-		manifest, err = lore.SelectManifest(manifest, cfg.Lists, !selected)
+		manifest, err := lore.FetchManifest(ctx, client, log, cfg.Lists, !selected)
 		if err == nil {
 			selected = true
 		}

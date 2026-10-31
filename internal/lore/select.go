@@ -3,6 +3,7 @@ package lore
 import (
 	"cmp"
 	"fmt"
+	"iter"
 	"maps"
 	"slices"
 	"strings"
@@ -17,9 +18,9 @@ func OrderedPaths(manifest Manifest) []string {
 	})
 }
 
-// requireAll rejects misspelled inbox names on the initial discovery. Later
-// snapshots may remove inboxes while retaining the rest of the selection.
-func SelectManifest(manifest Manifest, lists string, requireAll bool) (Manifest, error) {
+// Check requested inbox names against every advertised path, including archives
+// we skipped. Only supported epochs can appear in the result.
+func selectManifest(manifest Manifest, advertised iter.Seq[string], lists string, requireAll bool) (Manifest, error) {
 	result := maps.Clone(manifest)
 	// lkml.1 is maintained manually because GitHub rejects the NUL in
 	// commit 299dbd50b6995c6debe2275f0df984ce697fb4cc.
@@ -31,8 +32,8 @@ func SelectManifest(manifest Manifest, lists string, requireAll bool) (Manifest,
 	for _, list := range strings.Split(lists, ",") {
 		selected[strings.TrimSpace(list)] = false
 	}
-	for path := range manifest {
-		list := strings.Split(strings.TrimPrefix(path, "/"), "/")[0]
+	for path := range advertised {
+		list, _, _ := strings.Cut(path[1:], "/")
 		if _, ok := selected[list]; ok {
 			selected[list] = true
 		} else {

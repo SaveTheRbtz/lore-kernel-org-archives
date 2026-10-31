@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"math/rand"
 	"net/http"
@@ -34,7 +35,7 @@ func gzipManifest(t *testing.T, data string) []byte {
 	return b.Bytes()
 }
 
-func fetchResponse(t *testing.T, status int, body []byte) (Manifest, error) {
+func fetchResponse(t *testing.T, status int, body []byte, log *slog.Logger, lists string) (Manifest, error) {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET lore.kernel.org/manifest.js.gz", func(w http.ResponseWriter, _ *http.Request) {
@@ -43,7 +44,7 @@ func fetchResponse(t *testing.T, status int, body []byte) (Manifest, error) {
 		_, _ = w.Write(body)
 	})
 	server := httptest.NewTestServer(t, mux)
-	return FetchManifest(t.Context(), server.Client())
+	return FetchManifest(t.Context(), server.Client(), log, lists, true)
 }
 
 func TestFetchManifest(t *testing.T) {
@@ -51,11 +52,15 @@ func TestFetchManifest(t *testing.T) {
 		"/git/git/0.git":{"fingerprint":%[1]q,"modified":1,"description":"Git development [epoch 0]  ","owner":null,"forkgroup":"ignored"},
 		"/git/git/1.git":{"fingerprint":%[1]q,"modified":123,"description":"Git development [epoch 19]"},
 		"/linux-alpha/git/0.git":{"fingerprint":%[1]q,"modified":42,"description":"Alpha arch development list [epoch 0]"},
-		"/legacy":{"fingerprint":%[1]q,"modified":0,"description":"Legacy [epoch 0]"}
+		"/legacy":{"modified":"unused"}
 	}`, manifestTestFingerprint)
-	manifest, err := fetchResponse(t, http.StatusOK, gzipManifest(t, input))
+	var logs bytes.Buffer
+	manifest, err := fetchResponse(t, http.StatusOK, gzipManifest(t, input), slog.New(slog.NewTextHandler(&logs, nil)), "git,legacy,linux-alpha")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "level=WARN msg=unsharded_archive_skipped source=/legacy") {
+		t.Fatalf("missing warning for skipped archive: %s", &logs)
 	}
 	for path, entry := range manifest {
 		entry.Description = entry.Summary(path, "list@example.org")
@@ -65,7 +70,6 @@ func TestFetchManifest(t *testing.T) {
 		"/git/git/0.git":         {Fingerprint: manifestTestFingerprint, Modified: 1, Description: "Git development <list@example.org> (1 out of 2)", Epochs: 2},
 		"/git/git/1.git":         {Fingerprint: manifestTestFingerprint, Modified: 123, Description: "Git development [epoch 19] <list@example.org> (2 out of 2)", Epochs: 2},
 		"/linux-alpha/git/0.git": {Fingerprint: manifestTestFingerprint, Modified: 42, Description: "Alpha arch development list <list@example.org> (1 out of 1)", Epochs: 1},
-		"/legacy":                {Fingerprint: manifestTestFingerprint, Description: "Legacy [epoch 0] <list@example.org>"},
 	}
 	if !maps.Equal(manifest, want) {
 		t.Fatalf("manifest = %#v, want %#v", manifest, want)
@@ -77,21 +81,22 @@ func TestInvalidInventoryNeverReturnsPartialManifest(t *testing.T) {
 	tests := map[string]string{
 		"empty":              `{}`,
 		"null":               `null`,
-		"null entry":         `{"/list":null}`,
-		"trailing":           `{"/list":` + valid + `} {}`,
-		"duplicate":          `{"/list":` + valid + `,"/list":` + valid + `}`,
-		"name collision":     `{"/list":` + valid + `,"/List":` + valid + `}`,
-		"missing digest":     `{"/list":{"modified":123}}`,
-		"bad digest length":  `{"/list":{"fingerprint":"0123456789abcdef","modified":123}}`,
-		"bad digest content": `{"/list":{"fingerprint":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","modified":123}}`,
-		"missing modified":   fmt.Sprintf(`{"/list":{"fingerprint":%q}}`, manifestTestFingerprint),
-		"negative modified":  fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":-1}}`, manifestTestFingerprint),
+		"null entry":         `{"/list/git/0.git":null}`,
+		"trailing":           `{"/list/git/0.git":` + valid + `} {}`,
+		"duplicate":          `{"/list/git/0.git":` + valid + `,"/list/git/0.git":` + valid + `}`,
+		"name collision":     `{"/list/git/0.git":` + valid + `,"/List/git/0.git":` + valid + `}`,
+		"missing digest":     `{"/list/git/0.git":{"modified":123}}`,
+		"bad digest length":  `{"/list/git/0.git":{"fingerprint":"0123456789abcdef","modified":123}}`,
+		"bad digest content": `{"/list/git/0.git":{"fingerprint":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","modified":123}}`,
+		"missing modified":   fmt.Sprintf(`{"/list/git/0.git":{"fingerprint":%q}}`, manifestTestFingerprint),
+		"negative modified":  fmt.Sprintf(`{"/list/git/0.git":{"fingerprint":%q,"modified":-1}}`, manifestTestFingerprint),
+		"invalid list name":  `{"/.hidden":` + valid + `}`,
 		"invalid path":       `{"/../list":` + valid + `}`,
-		"one invalid entry":  `{"/good":` + valid + `,"/bad":{}}`,
+		"one invalid entry":  `{"/good/git/0.git":` + valid + `,"/bad/git/0.git":{}}`,
 	}
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
-			manifest, err := fetchResponse(t, http.StatusOK, gzipManifest(t, input))
+			manifest, err := fetchResponse(t, http.StatusOK, gzipManifest(t, input), slog.Default(), "")
 			if err == nil || manifest != nil {
 				t.Fatalf("expected rejected whole inventory; got %#v, %v", manifest, err)
 			}
@@ -100,7 +105,7 @@ func TestInvalidInventoryNeverReturnsPartialManifest(t *testing.T) {
 }
 
 func TestFetchManifestRejectsHTTPFailureAndTruncation(t *testing.T) {
-	valid := gzipManifest(t, fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":1}}`, manifestTestFingerprint))
+	valid := gzipManifest(t, fmt.Sprintf(`{"/list/git/0.git":{"fingerprint":%q,"modified":1}}`, manifestTestFingerprint))
 	corrupted := bytes.Clone(valid)
 	corrupted[len(corrupted)-8] ^= 1 // Corrupt the gzip CRC without changing the inventory.
 	for _, test := range []struct {
@@ -113,7 +118,7 @@ func TestFetchManifestRejectsHTTPFailureAndTruncation(t *testing.T) {
 		{"valid inventory with bad gzip checksum", http.StatusOK, corrupted},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got, err := fetchResponse(t, test.status, test.body); err == nil || got != nil {
+			if got, err := fetchResponse(t, test.status, test.body, slog.Default(), ""); err == nil || got != nil {
 				t.Fatalf("failed response accepted: %v, %v", got, err)
 			}
 		})
@@ -130,8 +135,8 @@ func TestFetchManifestBoundsValidPayloads(t *testing.T) {
 		"expanded":   strings.Repeat("x", 32<<20),
 	} {
 		t.Run(name, func(t *testing.T) {
-			body := gzipManifest(t, fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":1,"description":%q}}`, manifestTestFingerprint, description))
-			if got, err := fetchResponse(t, http.StatusOK, body); err == nil || got != nil {
+			body := gzipManifest(t, fmt.Sprintf(`{"/list/git/0.git":{"fingerprint":%q,"modified":1,"description":%q}}`, manifestTestFingerprint, description))
+			if got, err := fetchResponse(t, http.StatusOK, body, slog.Default(), ""); err == nil || got != nil {
 				t.Fatalf("oversized inventory accepted: entries=%d, err=%v", len(got), err)
 			}
 		})
@@ -149,7 +154,7 @@ func TestFetchManifestCancelsActiveRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { _, err := FetchManifest(ctx, client); done <- err }()
+	go func() { _, err := FetchManifest(ctx, client, slog.Default(), "", true); done <- err }()
 	select {
 	case <-started:
 		cancel()
@@ -167,7 +172,6 @@ func TestRepositoryName(t *testing.T) {
 		"/netdev/git/0.git":      "netdev.0",
 		"/linux-mm/git/2.git":    "linux-mm.2",
 		"/List.Name_1/git/2.git": "list.name_1.2",
-		"/legacy":                "legacy.v1",
 	}
 	for path, want := range valid {
 		got, err := RepositoryName(path)
@@ -175,7 +179,7 @@ func TestRepositoryName(t *testing.T) {
 			t.Errorf("RepositoryName(%q) = %q, %v; want %q", path, got, err, want)
 		}
 	}
-	invalid := []string{"", "lkml/git/0.git", "//evil/list", "/../list", "/list/../other", "/list%2fgit%2f0.git", "/list?x=1", "/list#fragment", "/list\\git\\0.git", "/list/git/-1.git", "/list/git/18446744073709551615.git", "/list/git/01.git", "/list/git/0", "/list/git/0.git/", "/list/other/0.git", "/.hidden", "/" + strings.Repeat("x", 100)}
+	invalid := []string{"", "/legacy", "lkml/git/0.git", "//evil/list", "/../list", "/list/../other", "/list%2fgit%2f0.git", "/list?x=1", "/list#fragment", "/list\\git\\0.git", "/list/git/-1.git", "/list/git/18446744073709551615.git", "/list/git/01.git", "/list/git/0", "/list/git/0.git/", "/list/other/0.git", "/.hidden", "/" + strings.Repeat("x", 100) + "/git/0.git"}
 	for _, path := range invalid {
 		if got, err := RepositoryName(path); err == nil {
 			t.Errorf("RepositoryName(%q) accepted: %q", path, got)

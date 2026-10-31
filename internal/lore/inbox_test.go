@@ -20,7 +20,7 @@ func TestFetchAddress(t *testing.T) {
 			status: http.StatusOK, want: "linux-kernel@vger.kernel.org",
 		},
 		{
-			name: "legacy archive on another mail host", sourcePath: "/linux-arm-kernel", configPath: "/linux-arm-kernel/_/text/config/raw",
+			name: "archive on another mail host", sourcePath: "/linux-arm-kernel/git/0.git", configPath: "/linux-arm-kernel/_/text/config/raw",
 			config: "[publicinbox \"linux-arm-kernel\"]\naddress = linux-arm-kernel@lists.infradead.org\n",
 			status: http.StatusOK, want: "linux-arm-kernel@lists.infradead.org",
 		},

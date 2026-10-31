@@ -1,6 +1,6 @@
 # lore-mirror
 
-Mirror [lore.kernel.org](https://lore.kernel.org) mailing-list archives to [lore-kernel-org-archives](https://github.com/lore-kernel-org-archives). Each archive epoch gets a repository: `/lkml/git/20.git` becomes `lkml.20`. Unsharded v1 archives use `<list>.v1`.
+Mirror [lore.kernel.org](https://lore.kernel.org) mailing-list archives to [lore-kernel-org-archives](https://github.com/lore-kernel-org-archives). Each archive epoch gets a repository: `/lkml/git/20.git` becomes `lkml.20`.
 
 The service discovers archives automatically and streams Git packs directly to GitHub. It keeps no local archive or database. GitHub repositories are mirrors: upstream ref changes and removals are propagated, so do not edit them directly. Removing an archive from Lore's manifest does not delete its GitHub repository.
 
