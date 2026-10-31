@@ -55,13 +55,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("initialize metrics: %w", err)
 	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := shutdownMetrics(ctx); err != nil {
-			log.Error("metrics_shutdown_failed", "error", err)
-		}
-	}()
+	defer shutdown(log, "metrics_shutdown_failed", 10*time.Second, shutdownMetrics)
 	github, err := gh.New(ctx, client, cfg.Org)
 	if err != nil {
 		return err
@@ -101,13 +95,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("start health server: %w", err)
 	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := shutdownHealth(ctx); err != nil {
-			log.Error("health_server_shutdown_failed", "error", err)
-		}
-	}()
+	defer shutdown(log, "health_server_shutdown_failed", 5*time.Second, shutdownHealth)
 	log.Info("starting", "source", lore.Origin, "org", cfg.Org, "once", cfg.Once)
 	finished := make(chan error, 1)
 	go func() {
@@ -127,6 +115,14 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		return nil
 	}
 	return err
+}
+
+func shutdown(log *slog.Logger, failureEvent string, timeout time.Duration, stop func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := stop(ctx); err != nil {
+		log.Error(failureEvent, "error", err)
+	}
 }
 
 func writeInventory(w io.Writer, manifest lore.Manifest) error {
