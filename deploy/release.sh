@@ -6,17 +6,16 @@ source deploy/config.sh
 build=$(gcloud builds submit . --config=cloudbuild.yaml --region="$region" \
   --substitutions="_REGION=$region" \
   --service-account="projects/$project/serviceAccounts/$build_sa" \
-  --gcs-source-staging-dir="$source_bucket/source" --suppress-logs --format='value(id)')
-digest=$(gcloud builds describe "$build" --region="$region" --format='value(results.images[0].digest)')
-[[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'Missing image digest\n' >&2; exit 1; }
-image="$region-docker.pkg.dev/$project/$name/$name@$digest"
+  --gcs-source-staging-dir="$source_bucket/source" --suppress-logs --format='json(results.images)')
 
-python3 - "$image" <<'PY'
-import json, pathlib, sys
+python3 - "$build" <<'PY'
+import json, pathlib, re, sys
+image = json.loads(sys.argv[1])["results"]["images"][0]
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", image["digest"]):
+    raise SystemExit("Missing image digest")
 path = pathlib.Path("infra/runtime.auto.tfvars.json")
 config = json.loads(path.read_text())
-config["image"] = sys.argv[1]
+config["image"] = image["name"].rsplit(":", 1)[0] + "@" + image["digest"]
 path.write_text(json.dumps(config, indent=2) + "\n")
 PY
 bash deploy/apply.sh
-printf 'Deployed %s\n' "$image"

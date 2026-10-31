@@ -1,8 +1,10 @@
-name: golangci-lint
+name: CI
 
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "23 9 * * 3"
   workflow_dispatch:
 
 permissions:
@@ -13,9 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       CGO_ENABLED: "0"
       GOTOOLCHAIN: local
@@ -27,7 +29,17 @@ jobs:
         with:
           go-version: 1.27.x
           check-latest: true
+      - name: Build
+        run: go build -trimpath ./cmd/lore-mirror
+      - name: Test
+        run: go test -timeout=2m ./...
+      - name: Race check
+        run: CGO_ENABLED=1 go test -race -timeout=3m ./...
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
           args: --timeout=5m ./...
+      - name: Scan for vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck -test ./...
