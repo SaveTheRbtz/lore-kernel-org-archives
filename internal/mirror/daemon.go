@@ -118,7 +118,7 @@ func (d *daemon) run(ctx context.Context) error {
 				throttles = 0
 				active.failures = 0
 				active.next = now.Add(jitter(d.recheck))
-				if active.entry.Fingerprint != activeEntry.Fingerprint || active.entry.Modified != activeEntry.Modified {
+				if !sameRevision(active.entry, activeEntry) {
 					active.next = now
 				}
 			} else if ctx.Err() == nil {
@@ -193,6 +193,10 @@ func (d *daemon) syncWork(ctx context.Context, path string, entry lore.ManifestE
 	return err
 }
 
+func sameRevision(a, b lore.ManifestEntry) bool {
+	return a.Fingerprint == b.Fingerprint && a.Modified == b.Modified
+}
+
 func (d *daemon) reconcile(queue map[string]*work, manifest lore.Manifest) {
 	now := time.Now()
 	for path := range queue {
@@ -205,8 +209,7 @@ func (d *daemon) reconcile(queue map[string]*work, manifest lore.Manifest) {
 		if !exists {
 			queue[path] = &work{entry: entry, next: now.Add(rand.N(d.recheck))}
 		} else {
-			changed := old.entry.Fingerprint != entry.Fingerprint || old.entry.Modified != entry.Modified
-			if changed && old.failures == 0 && old.next.After(now) {
+			if !sameRevision(old.entry, entry) && old.failures == 0 && old.next.After(now) {
 				old.next = now
 			}
 			// Keep failure backoff and deadlines of work already due.
