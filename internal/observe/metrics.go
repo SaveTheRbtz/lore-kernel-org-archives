@@ -108,7 +108,6 @@ func telemetryCredentials(setup context.Context) (credentials.PerRPCCredentials,
 }
 
 func newTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
-	t := &Telemetry{}
 	operations, e1 := meter.Int64Counter("lore_mirror_operations",
 		metric.WithDescription("Completed operations by outcome"), metric.WithUnit("{operation}"))
 	duration, e2 := meter.Float64Histogram("lore_mirror_operation_duration",
@@ -131,7 +130,7 @@ func newTelemetry(meter metric.Meter, health *Health) (*Telemetry, error) {
 	if err := errors.Join(e1, e2, e3, e4, e5, e6, e7, e8, e9); err != nil {
 		return nil, err
 	}
-	t.operations, t.duration = operations, duration
+	t := &Telemetry{operations: operations, duration: duration}
 	receivedAttrs := metric.WithAttributes(attribute.String("direction", "receive"))
 	sentAttrs := metric.WithAttributes(attribute.String("direction", "send"))
 	_, err := meter.RegisterCallback(func(_ context.Context, observer metric.Observer) error {
