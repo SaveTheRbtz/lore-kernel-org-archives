@@ -104,16 +104,16 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath string, summar
 	if err != nil {
 		return Repository{}, err
 	}
-	if summary != nil && (remote.GetDescription() != desc || remote.GetHomepage() != listURL) {
-		remote, _, err = g.api.Repositories.Edit(ctx, g.org, name, &sdk.Repository{
-			Description: new(desc), Homepage: new(listURL),
-		})
-		if err != nil {
-			return Repository{}, retryPolicy(err)
-		}
-		return g.validateRepository(remote, name, sourceURL, listURL, repo.ID)
+	if summary == nil || (remote.GetDescription() == desc && remote.GetHomepage() == listURL) {
+		return repo, nil
 	}
-	return repo, nil
+	remote, _, err = g.api.Repositories.Edit(ctx, g.org, name, &sdk.Repository{
+		Description: new(desc), Homepage: new(listURL),
+	})
+	if err != nil {
+		return Repository{}, retryPolicy(err)
+	}
+	return g.validateRepository(remote, name, sourceURL, listURL, repo.ID)
 }
 
 func (g *Client) lookupOrCreate(ctx context.Context, name, desc, listURL string, expectedID int64) (*sdk.Repository, error) {
