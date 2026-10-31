@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -23,12 +24,12 @@ import (
 	"lore-mirror/internal/observe"
 )
 
-const defaultMaxPushBytes int64 = 7 << 28 // 1.75 GiB, including update commands.
+const DefaultMaxPushBytes int64 = 7 << 28 // 1.75 GiB, including update commands.
 
 var ErrPushTooLarge = errors.New("push exceeds configured byte limit")
 
 // Relay streams packs without opening a local Git repository. The caller must
-// serialize operations for each destination repository and provide a deadline.
+// serialize operations for each destination and provide an HTTP client and deadline.
 type Relay struct {
 	Client       *http.Client
 	MaxPushBytes int64
@@ -161,7 +162,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 	}
 	limit := r.MaxPushBytes
 	if limit == 0 {
-		limit = defaultMaxPushBytes
+		limit = DefaultMaxPushBytes
 	}
 	if limit < 0 {
 		return result, errors.New("max push bytes must be positive")
@@ -180,7 +181,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 	if err != nil {
 		return result, err
 	}
-	if len(relayCommands(result.SourceRefs, verifiedRefs)) != 0 {
+	if !maps.Equal(result.SourceRefs, verifiedRefs) {
 		return result, errors.New("destination refs differ after push; retry from fresh advertisements")
 	}
 	result.Changed = true
@@ -188,10 +189,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 }
 
 func (r *Relay) httpClient() *http.Client {
-	client := http.Client{}
-	if r.Client != nil {
-		client = *r.Client
-	}
+	client := *r.Client
 	// A streaming request cannot be replayed, and credentials must not follow
 	// redirects. Reconfigure the endpoint explicitly if a repository moves.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -254,13 +252,8 @@ func relayCommands(source, destination map[string]plumbing.Hash) []*packp.Comman
 	for name := range destination {
 		names[name] = true
 	}
-	ordered := make([]string, 0, len(names))
-	for name := range names {
-		ordered = append(ordered, name)
-	}
-	sort.Strings(ordered)
 	var commands []*packp.Command
-	for _, name := range ordered {
+	for _, name := range slices.Sorted(maps.Keys(names)) {
 		if source[name] != destination[name] {
 			commands = append(commands, &packp.Command{Name: plumbing.ReferenceName(name), Old: destination[name], New: source[name]})
 		}

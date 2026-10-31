@@ -234,7 +234,7 @@ func TestRunOnceContinuesPastFailure(t *testing.T) {
 
 func TestHealthReportsBlockedWorkAndRecoversAfterCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		health := observe.NewHealth(time.Now)
+		health := &observe.Health{}
 		release := make(chan struct{})
 		started := make(chan struct{})
 		d := daemon{

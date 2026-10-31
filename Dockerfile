@@ -10,5 +10,4 @@ RUN CGO_ENABLED=0 go test ./... \
 
 FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /lore-mirror /lore-mirror
-HEALTHCHECK --interval=30s --timeout=6s --start-period=30s --retries=3 CMD ["/lore-mirror", "-healthcheck"]
 ENTRYPOINT ["/lore-mirror"]

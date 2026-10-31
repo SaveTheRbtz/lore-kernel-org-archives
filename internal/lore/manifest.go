@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 )
 
 const (
+	Origin                = "https://lore.kernel.org"
 	maxManifestCompressed = 8 << 20
 	maxManifestExpanded   = 32 << 20
 )
@@ -30,12 +30,7 @@ type Manifest map[string]ManifestEntry
 // FetchManifest retrieves one complete inventory. A bad entry invalidates the
 // entire response, so a partial inventory never replaces the last good one.
 func FetchManifest(ctx context.Context, client *http.Client, sourceURL string) (Manifest, error) {
-	u, err := sourceOrigin(sourceURL)
-	if err != nil {
-		return nil, err
-	}
-	u.Path = "/manifest.js.gz"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(sourceURL, "/")+"/manifest.js.gz", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -43,9 +38,6 @@ func FetchManifest(ctx context.Context, client *http.Client, sourceURL string) (
 	// both the compressed and expanded byte limits have their intended meaning.
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("User-Agent", "lore-mirror")
-	if client == nil {
-		client = http.DefaultClient
-	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch manifest: %w", err)
@@ -155,30 +147,9 @@ func RepositoryName(sourcePath string) (string, error) {
 	return name, nil
 }
 
-func SourceRepositoryURL(sourceURL, sourcePath string) (string, error) {
+func SourceRepositoryURL(sourcePath string) (string, error) {
 	if _, err := RepositoryName(sourcePath); err != nil {
 		return "", err
 	}
-	u, err := sourceOrigin(sourceURL)
-	if err != nil {
-		return "", err
-	}
-	u.Path = sourcePath
-	return u.String(), nil
-}
-
-// HTTP is accepted for local test servers; application configuration enforces
-// HTTPS before these helpers are used in production.
-func sourceOrigin(raw string) (*url.URL, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("invalid source URL: %w", err)
-	}
-	if (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.Hostname() == "" ||
-		u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" ||
-		u.Opaque != "" || u.RawPath != "" || (u.Path != "" && u.Path != "/") {
-		return nil, fmt.Errorf("source URL must be an HTTP(S) origin without credentials, query, or path")
-	}
-	u.Path = ""
-	return u, nil
+	return Origin + sourcePath, nil
 }

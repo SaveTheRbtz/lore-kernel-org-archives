@@ -19,6 +19,15 @@ import (
 	sdk "github.com/google/go-github/v88/github"
 )
 
+func TestNewRejectsInvalidOrganizationBeforeCredentials(t *testing.T) {
+	t.Setenv("GITHUB_APP_SECRET", "")
+	for _, org := range []string{"", "..", "owner/repo", "bad org", "user@example.org"} {
+		if _, err := New(t.Context(), http.DefaultClient, org); err == nil || err.Error() != "invalid GitHub organization" {
+			t.Errorf("New(%q) returned %v", org, err)
+		}
+	}
+}
+
 func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 	const sourcePath = "/lkml/git/20.git"
 	const name = "lkml.20"

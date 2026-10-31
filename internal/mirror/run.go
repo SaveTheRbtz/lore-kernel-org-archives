@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	gh "lore-mirror/internal/github"
@@ -18,7 +16,7 @@ import (
 )
 
 type Config struct {
-	Source, Org, Lists     string
+	Org, Lists             string
 	Discover, Once         bool
 	Poll, Recheck, Timeout time.Duration
 	MaxPushBytes           int64
@@ -34,7 +32,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	fetch := func(ctx context.Context) (lore.Manifest, error) {
 		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
-		manifest, err := lore.FetchManifest(ctx, client, cfg.Source)
+		manifest, err := lore.FetchManifest(ctx, client, lore.Origin)
 		if err != nil {
 			return nil, err
 		}
@@ -59,7 +57,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(items)
 	}
-	health := observe.NewHealth(time.Now)
+	health := &observe.Health{}
 	metrics, shutdownMetrics, err := observe.StartTelemetry(ctx, os.Getenv("GOOGLE_CLOUD_PROJECT"), health)
 	if err != nil {
 		return fmt.Errorf("initialize metrics: %w", err)
@@ -94,7 +92,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 			repositories[sourcePath] = repository
 		}
 		health.Progress("sync")
-		sourceURL, err := lore.SourceRepositoryURL(cfg.Source, sourcePath)
+		sourceURL, err := lore.SourceRepositoryURL(sourcePath)
 		if err != nil {
 			return err
 		}
@@ -130,7 +128,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 			log.Error("health_server_shutdown_failed", "error", err)
 		}
 	}()
-	log.Info("starting", "source", cfg.Source, "org", cfg.Org, "once", cfg.Once)
+	log.Info("starting", "source", lore.Origin, "org", cfg.Org, "once", cfg.Once)
 	finished := make(chan error, 1)
 	go func() {
 		if cfg.Once {
@@ -152,18 +150,11 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 }
 
 func (c Config) validate() error {
-	u, err := url.Parse(c.Source)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return errors.New("-source must be an HTTPS origin without credentials, path, query, or fragment")
-	}
 	if c.Poll <= 0 || c.Recheck <= 0 || c.Timeout <= 0 {
 		return errors.New("poll, recheck, and timeout must be positive")
 	}
 	if c.MaxPushBytes <= 0 || c.MaxPushBytes >= 2*(1<<30) {
 		return errors.New("max-push-bytes must be positive and less than 2 GiB")
-	}
-	if !c.Discover && (c.Org == "" || strings.ContainsAny(c.Org, "/\\ .:@?#")) {
-		return errors.New("set -org or GITHUB_ORG to the dedicated GitHub organization")
 	}
 	return nil
 }

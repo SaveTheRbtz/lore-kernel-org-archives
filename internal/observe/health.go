@@ -17,10 +17,7 @@ const stuckAfter = 5 * time.Minute
 type Health struct {
 	mu   sync.Mutex
 	last [2]time.Time
-	now  func() time.Time
 }
-
-func NewHealth(now func() time.Time) *Health { return &Health{now: now} }
 
 func healthActivity(operation string) int {
 	switch operation {
@@ -39,7 +36,7 @@ func (h *Health) Begin(operation string) func() {
 		return func() {}
 	}
 	h.mu.Lock()
-	h.last[index] = h.now()
+	h.last[index] = time.Now()
 	h.mu.Unlock()
 	return func() {
 		h.mu.Lock()
@@ -55,7 +52,7 @@ func (h *Health) Progress(operation string) {
 	}
 	h.mu.Lock()
 	if !h.last[index].IsZero() {
-		h.last[index] = h.now()
+		h.last[index] = time.Now()
 	}
 	h.mu.Unlock()
 }
@@ -66,7 +63,7 @@ func (h *Health) Stuck() bool {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	now := h.now()
+	now := time.Now()
 	for _, progress := range h.last {
 		if !progress.IsZero() && now.Sub(progress) >= stuckAfter {
 			return true

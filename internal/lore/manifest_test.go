@@ -166,18 +166,11 @@ func TestRepositoryName(t *testing.T) {
 }
 
 func TestSourceRepositoryURL(t *testing.T) {
-	for _, origin := range []string{"https://erol.kernel.org", "https://erol.kernel.org/"} {
-		got, err := SourceRepositoryURL(origin, "/lkml/git/0.git")
-		if err != nil || got != "https://erol.kernel.org/lkml/git/0.git" {
-			t.Fatalf("unexpected URL: %q, %v", got, err)
-		}
+	got, err := SourceRepositoryURL("/lkml/git/0.git")
+	if err != nil || got != "https://lore.kernel.org/lkml/git/0.git" {
+		t.Fatalf("unexpected URL: %q, %v", got, err)
 	}
-	for _, origin := range []string{"file:///tmp", "ssh://example.com", "https://example.com/nested", "https://user:secret@example.com", "https://example.com?x=y", "https://example.com?", "https://example.com#x", "https://example.com/%2f", "//example.com", "https://"} {
-		if got, err := SourceRepositoryURL(origin, "/list"); err == nil {
-			t.Errorf("accepted invalid origin %q: %q", origin, got)
-		}
-	}
-	if _, err := SourceRepositoryURL("https://erol.kernel.org", "//evil.example/list"); err == nil {
+	if _, err := SourceRepositoryURL("//evil.example/list"); err == nil {
 		t.Error("accepted host-replacing repository path")
 	}
 }

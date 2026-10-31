@@ -27,6 +27,9 @@ type Repository struct {
 }
 
 func New(ctx context.Context, client *http.Client, org string) (*Client, error) {
+	if !validOrganization(org) {
+		return nil, errors.New("invalid GitHub organization")
+	}
 	secret, err := readAppSecret(ctx)
 	if err != nil {
 		return nil, err
@@ -67,10 +70,7 @@ func (g *Client) EnsureRepository(ctx context.Context, sourcePath, description s
 	if err != nil {
 		return Repository{}, err
 	}
-	if !validGitHubName(g.org) {
-		return Repository{}, errors.New("invalid GitHub organization")
-	}
-	sourceURL := "https://lore.kernel.org" + sourcePath
+	sourceURL := lore.Origin + sourcePath
 	remote, response, err := g.api.Repositories.Get(ctx, g.org, name)
 	if err == nil {
 		return g.validateRepository(remote, name, sourceURL)
@@ -119,9 +119,6 @@ func (g *Client) validateRepository(remote *sdk.Repository, name, sourceURL stri
 }
 
 func (g *Client) SetDefaultBranch(ctx context.Context, repoName, branch string) error {
-	if !validGitHubName(g.org) || !validGitHubName(repoName) || branch == "" {
-		return errors.New("invalid repository or default branch")
-	}
 	remote, _, err := g.api.Repositories.Get(ctx, g.org, repoName)
 	if err != nil {
 		return retryPolicy(err)
@@ -133,12 +130,12 @@ func (g *Client) SetDefaultBranch(ctx context.Context, repoName, branch string) 
 	return retryPolicy(err)
 }
 
-func validGitHubName(name string) bool {
-	if name == "" || name == "." || name == ".." {
+func validOrganization(name string) bool {
+	if name == "" {
 		return false
 	}
 	for _, c := range name {
-		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.' {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' {
 			continue
 		}
 		return false

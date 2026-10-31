@@ -461,7 +461,7 @@ func TestRelayRejectsUnsafeEndpointsAndRedirects(t *testing.T) {
 		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
 	}))
 	defer origin.Close()
-	client := (&Relay{}).httpClient()
+	client := (&Relay{Client: origin.Client()}).httpClient()
 	request, err := http.NewRequest(http.MethodGet, origin.URL, nil)
 	if err != nil {
 		t.Fatal(err)
