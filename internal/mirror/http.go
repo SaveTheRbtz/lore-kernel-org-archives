@@ -31,13 +31,14 @@ type gitTransport struct{ http.RoundTripper }
 
 func (t gitTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := t.RoundTripper.RoundTrip(request)
-	if err == nil && response.StatusCode >= http.StatusMultipleChoices {
-		if delay := retryafter.Delay(response, 0); delay > 0 {
-			// go-git drops response headers on some errors, including HTTP 403.
-			// Do not retain or log an error body that might echo credentials.
-			_ = response.Body.Close()
-			return nil, retryafter.Wrap(fmt.Errorf("git HTTP %d", response.StatusCode), delay)
-		}
+	if err != nil || response.StatusCode < http.StatusMultipleChoices {
+		return response, err
 	}
-	return response, err
+	if delay := retryafter.Delay(response, 0); delay > 0 {
+		// go-git drops response headers on some errors, including HTTP 403.
+		// Do not retain or log an error body that might echo credentials.
+		_ = response.Body.Close()
+		return nil, retryafter.Wrap(fmt.Errorf("git HTTP %d", response.StatusCode), delay)
+	}
+	return response, nil
 }
