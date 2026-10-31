@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io"
@@ -62,10 +63,7 @@ func newRelayTestServer(t *testing.T) *relayTestServer {
 func (s *relayTestServer) sync(limit int64) (SyncResult, error) {
 	ctx, cancel := context.WithTimeout(s.t.Context(), 5*time.Second)
 	defer cancel()
-	if limit == 0 {
-		limit = DefaultMaxPushBytes
-	}
-	r := Relay{Client: s.client, MaxPushBytes: limit}
+	r := Relay{Client: s.client, MaxPushBytes: cmp.Or(limit, DefaultMaxPushBytes)}
 	result, err := r.Sync(ctx, "https://example.com/source.git", "https://example.com/destination.git", "test-token", "master", s.setDefault)
 	// Failed HTTP calls can return before their server handlers unwind.
 	s.sourceMu.Lock()
