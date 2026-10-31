@@ -14,6 +14,7 @@ import (
 
 	"lore-mirror/internal/lore"
 	"lore-mirror/internal/observe"
+	"lore-mirror/internal/retryafter"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -137,15 +138,16 @@ func TestRateLimitBackoffAcrossRepositories(t *testing.T) {
 			previous = got.at
 		}
 		expect(0, 0)
-		results <- delayedError(time.Minute)
+		limited := errors.New("rate limit")
+		results <- retryafter.Wrap(limited, time.Minute)
 		expect(time.Minute, 66*time.Second)
-		results <- delayedError(time.Minute)
+		results <- retryafter.Wrap(limited, time.Minute)
 		expect(2*time.Minute, 132*time.Second)
 		results <- nil
 		expect(0, 0)
-		results <- delayedError(time.Minute)
+		results <- retryafter.Wrap(limited, time.Minute)
 		expect(time.Minute, 66*time.Second)
-		results <- delayedError(3 * time.Hour)
+		results <- retryafter.Wrap(limited, 3*time.Hour)
 		expect(3*time.Hour, 3*time.Hour)
 	})
 }
@@ -333,11 +335,6 @@ func TestHealthReportsBlockedWorkAndRecoversAfterCancellation(t *testing.T) {
 		check(false)
 	})
 }
-
-type delayedError time.Duration
-
-func (delayedError) Error() string               { return "rate limit" }
-func (d delayedError) RetryAfter() time.Duration { return time.Duration(d) }
 
 func drainWork(events <-chan string) []string {
 	var paths []string

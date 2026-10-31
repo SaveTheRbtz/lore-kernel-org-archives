@@ -14,6 +14,7 @@ import (
 
 	"lore-mirror/internal/lore"
 	"lore-mirror/internal/observe"
+	"lore-mirror/internal/retryafter"
 )
 
 type daemon struct {
@@ -124,7 +125,7 @@ func (d *daemon) run(ctx context.Context) error {
 				}
 			} else if ctx.Err() == nil {
 				active.failures++
-				retryAfter := serverRetryAfter(err)
+				retryAfter := retryafter.FromError(err)
 				delay := retryDelay(err, active.failures, retryAfter)
 				if retryAfter > 0 {
 					throttles++
@@ -164,7 +165,7 @@ func (d *daemon) runOnce(ctx context.Context) error {
 		}
 		failed++
 		d.log.Error("sync_failed", "source", path, "error", err)
-		if pause := serverRetryAfter(err); pause > 0 {
+		if pause := retryafter.FromError(err); pause > 0 {
 			return fmt.Errorf("rate limited: stop one-shot run and retry after %s: %w", pause, err)
 		}
 	}
@@ -254,17 +255,6 @@ func retryDelay(err error, failures int, retryAfter time.Duration) time.Duration
 		delay *= 2
 	}
 	return max(jitter(min(delay, time.Hour)), retryAfter)
-}
-
-func serverRetryAfter(err error) time.Duration {
-	type throttled interface {
-		error
-		RetryAfter() time.Duration
-	}
-	if throttled, ok := errors.AsType[throttled](err); ok {
-		return throttled.RetryAfter()
-	}
-	return 0
 }
 
 func jitter(delay time.Duration) time.Duration {

@@ -15,6 +15,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"lore-mirror/internal/lore"
+	"lore-mirror/internal/retryafter"
 )
 
 func TestRepositorySummary(t *testing.T) {
@@ -53,7 +54,7 @@ func TestRepositorySummaryPropagatesThrottleAndCancellation(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	_, err := repositorySummary(t.Context(), server.Client(), testLogger(), "/list/git/0.git", lore.ManifestEntry{})
-	if delay := serverRetryAfter(err); delay != 2*time.Minute {
+	if delay := retryafter.FromError(err); delay != 2*time.Minute {
 		t.Fatalf("scheduler delay = %s, want 2m; error = %v", delay, err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())

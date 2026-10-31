@@ -1,11 +1,12 @@
 package lore
 
 import (
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"lore-mirror/internal/retryafter"
 )
 
 func TestFetchAddress(t *testing.T) {
@@ -61,8 +62,7 @@ func TestFetchAddressPreservesRetryAfter(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	_, err := FetchAddress(t.Context(), server.Client(), "/lkml/git/0.git")
-	var limited interface{ RetryAfter() time.Duration }
-	if !errors.As(err, &limited) || limited.RetryAfter() != 2*time.Minute {
+	if retryafter.FromError(err) != 2*time.Minute {
 		t.Fatalf("FetchAddress error = %v; want 2-minute retry delay", err)
 	}
 }

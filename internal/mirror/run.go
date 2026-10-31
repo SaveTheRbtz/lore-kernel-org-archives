@@ -16,6 +16,7 @@ import (
 	gh "lore-mirror/internal/github"
 	"lore-mirror/internal/lore"
 	"lore-mirror/internal/observe"
+	"lore-mirror/internal/retryafter"
 )
 
 type Config struct {
@@ -152,7 +153,7 @@ func repositorySummary(ctx context.Context, client *http.Client, log *slog.Logge
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}
-	if serverRetryAfter(err) > 0 {
+	if retryafter.FromError(err) > 0 {
 		return nil, err
 	}
 	log.Warn("posting_address_unavailable", "source", path, "error", err)

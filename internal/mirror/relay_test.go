@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"lore-mirror/internal/observe"
+	"lore-mirror/internal/retryafter"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
@@ -261,7 +262,7 @@ func TestRelayPreservesThrottlingThroughGoGit(t *testing.T) {
 				return true
 			}
 			_, err := s.sync(t, 0)
-			if delay := serverRetryAfter(err); delay != 42*time.Second {
+			if delay := retryafter.FromError(err); delay != 42*time.Second {
 				t.Fatalf("scheduler delay = %s, want 42s; error=%v", delay, err)
 			}
 			if strings.Contains(err.Error(), "test-token") {
@@ -593,7 +594,7 @@ func TestReceivePackPreservesRetryAfter(t *testing.T) {
 			relay := Relay{Client: relayTestClient(receiver), MaxPushBytes: 4096}
 			pack := io.NopCloser(bytes.NewReader(relayEmptyPack()))
 			_, err := relay.receivePack(t.Context(), "https://example.com", "test-token", testUpdate(t, pack))
-			if delay := serverRetryAfter(err); delay != tc.delay {
+			if delay := retryafter.FromError(err); delay != tc.delay {
 				t.Errorf("Retry-After %q: scheduler delay=%s, want %s; error=%v", tc.header, delay, tc.delay, err)
 			}
 		}

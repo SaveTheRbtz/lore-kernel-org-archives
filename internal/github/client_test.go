@@ -16,6 +16,8 @@ import (
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/google/go-cmp/cmp"
 	sdk "github.com/google/go-github/v88/github"
+
+	"lore-mirror/internal/retryafter"
 )
 
 func TestNewRejectsInvalidOrganizationBeforeCredentials(t *testing.T) {
@@ -319,8 +321,7 @@ func TestRepositoryOperationsPropagateRateLimits(t *testing.T) {
 			} else {
 				_, err = g.EnsureRepository(ctx, "/lkml/git/0.git", sdk.Ptr(""), 0)
 			}
-			var limited interface{ RetryAfter() time.Duration }
-			if !errors.As(err, &limited) || limited.RetryAfter() != 42*time.Second {
+			if retryafter.FromError(err) != 42*time.Second {
 				t.Fatalf("%s did not expose a 42-second scheduler cooldown: %v", operation, err)
 			}
 			wantRequests := int32(1)
@@ -346,8 +347,7 @@ func TestCreateHonorsBareRetryAfter(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 	_, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", nil, 0)
-	var limited interface{ RetryAfter() time.Duration }
-	if !errors.As(err, &limited) || limited.RetryAfter() != 2*time.Minute {
+	if retryafter.FromError(err) != 2*time.Minute {
 		t.Errorf("expected a two-minute scheduler cooldown, got %v", err)
 	}
 	if got := requests.Load(); got != 2 {
@@ -371,8 +371,7 @@ func TestRetryPolicyPreservesSDKRateLimits(t *testing.T) {
 			{"bounded", &sdk.AbuseRateLimitError{RetryAfter: sdk.Ptr(48 * time.Hour)}, 24 * time.Hour},
 		} {
 			got := retryPolicy(tc.err)
-			var limited interface{ RetryAfter() time.Duration }
-			if !errors.As(got, &limited) || limited.RetryAfter() != tc.delay || !errors.Is(got, tc.err) {
+			if retryafter.FromError(got) != tc.delay || !errors.Is(got, tc.err) {
 				t.Fatalf("%s: SDK rate limit was not preserved with the expected retry delay", tc.name)
 			}
 		}
@@ -402,8 +401,7 @@ func TestRetryPolicyClosesAuthResponseAndPreservesRateLimit(t *testing.T) {
 	}
 	_, err = client.Do(req)
 	err = retryPolicy(err)
-	var limited interface{ RetryAfter() time.Duration }
-	if !errors.As(err, &limited) || limited.RetryAfter() != 42*time.Second || !errors.Is(err, auth) {
+	if retryafter.FromError(err) != 42*time.Second || !errors.Is(err, auth) {
 		t.Fatalf("auth failure lost its cause or cooldown: %v", err)
 	}
 	if !body.closed {

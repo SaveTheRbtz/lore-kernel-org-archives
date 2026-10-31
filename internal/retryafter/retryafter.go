@@ -2,6 +2,7 @@
 package retryafter
 
 import (
+	"errors"
 	"net/http"
 	"time"
 )
@@ -13,8 +14,15 @@ type Error struct {
 	after time.Duration
 }
 
-func (e *Error) Unwrap() error             { return e.error }
-func (e *Error) RetryAfter() time.Duration { return e.after }
+func (e *Error) Unwrap() error { return e.error }
+
+// FromError returns the server-requested delay carried by err, or zero.
+func FromError(err error) time.Duration {
+	if limited, ok := errors.AsType[*Error](err); ok {
+		return limited.after
+	}
+	return 0
+}
 
 func Wrap(err error, delay time.Duration) error {
 	if err == nil {
