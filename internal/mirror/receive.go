@@ -24,6 +24,13 @@ type relayLimitedWriter struct {
 	health  *observe.Health
 }
 
+type receivePackError struct {
+	status  int
+	message string
+}
+
+func (e *receivePackError) Error() string { return e.message }
+
 func (w *relayLimitedWriter) Write(p []byte) (int, error) {
 	remaining := w.limit - w.n
 	if remaining <= 0 && len(p) > 0 {
@@ -84,7 +91,7 @@ func (r *Relay) receivePack(ctx context.Context, destination, token string, upda
 				text = strings.ReplaceAll(text, token, "[redacted]")
 				text = strings.ReplaceAll(text, base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token)), "[redacted]")
 			}
-			receiveErr = errors.New(text)
+			receiveErr = &receivePackError{status: response.StatusCode, message: text}
 		} else if contentType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type")); contentType != "application/x-git-receive-pack-result" {
 			receiveErr = fmt.Errorf("unexpected receive-pack content type %q", contentType)
 		} else {

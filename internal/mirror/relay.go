@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -35,6 +36,7 @@ type Relay struct {
 	MaxPushBytes int64
 	metrics      *observe.Telemetry
 	health       *observe.Health
+	log          *slog.Logger
 }
 
 type SyncResult struct {
@@ -42,6 +44,19 @@ type SyncResult struct {
 	SourceRefs    map[string]plumbing.Hash
 	DefaultBranch string
 	Bytes         int64
+	Batches       int
+}
+
+type relaySession struct {
+	*Relay
+	up                  transport.UploadPackSession
+	down                transport.ReceivePackSession
+	source, destination *transport.Endpoint
+	src, dst            *packp.AdvRefs
+	token               string
+	bytes               int64
+	batches             int
+	paced               bool
 }
 
 // Sync makes all user-managed destination refs match one source advertisement.
@@ -93,23 +108,48 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 		return result, err
 	}
 	result.DefaultBranch = relayDefaultBranch(src, result.SourceRefs)
-	commands := relayCommands(result.SourceRefs, destinationRefs)
-	if len(commands) == 0 {
+	if maps.Equal(result.SourceRefs, destinationRefs) {
 		return result, nil
 	}
-	if !dst.Capabilities.Supports(capability.ReportStatus) {
-		return result, errors.New("destination does not support report-status")
+	session := &relaySession{Relay: r, up: up, down: down, source: source, destination: destination, src: src, dst: dst, token: token}
+	err = session.sync(ctx, result.SourceRefs)
+	if checkpointRetry(err) && src.Capabilities.Supports(capability.Shallow) && src.Capabilities.Supports(capability.AllowReachableSHA1InWant) {
+		initialErr := err
+		if r.log != nil {
+			r.log.Warn("push_fallback", "source", sourceURL, "error", err, "request_bytes", session.bytes)
+		}
+		err = session.importCheckpoints(ctx, result.SourceRefs)
+		if err != nil {
+			err = fmt.Errorf("initial push: %v; checkpoint import: %w", initialErr, err)
+		}
+	}
+	result.Bytes, result.Batches = session.bytes, session.batches
+	result.Changed = err == nil
+	return result, err
+}
+
+func (s *relaySession) sync(ctx context.Context, refs map[string]plumbing.Hash) error {
+	destinationRefs, err := relayRefs(s.dst, false)
+	if err != nil {
+		return err
+	}
+	commands := relayCommands(refs, destinationRefs)
+	if len(commands) == 0 {
+		return nil
+	}
+	if !s.dst.Capabilities.Supports(capability.ReportStatus) {
+		return errors.New("destination does not support report-status")
 	}
 	update := packp.NewReferenceUpdateRequest()
 	update.Commands = commands
 	_ = update.Capabilities.Set(capability.ReportStatus)
-	if dst.Capabilities.Supports(capability.Atomic) {
+	if s.dst.Capabilities.Supports(capability.Atomic) {
 		_ = update.Capabilities.Set(capability.Atomic)
 	}
 	for _, command := range commands {
 		if command.Action() == packp.Delete {
-			if !dst.Capabilities.Supports(capability.DeleteRefs) {
-				return result, errors.New("destination does not support delete-refs")
+			if !s.dst.Capabilities.Supports(capability.DeleteRefs) {
+				return errors.New("destination does not support delete-refs")
 			}
 			_ = update.Capabilities.Set(capability.DeleteRefs)
 		}
@@ -117,7 +157,7 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 
 	fetch := packp.NewUploadPackRequest() // Full history; no thin packs or multi-ACK.
 	known := make(map[plumbing.Hash]bool)
-	for name, hash := range dst.References {
+	for name, hash := range s.dst.References {
 		known[hash] = true
 		if strings.HasPrefix(name, "refs/heads/") && hash != plumbing.ZeroHash {
 			fetch.Haves = append(fetch.Haves, hash)
@@ -136,53 +176,63 @@ func (r *Relay) Sync(ctx context.Context, sourceURL, destinationURL, token strin
 		}
 	}
 	if len(fetch.Wants) > 0 {
-		if src.Capabilities.Supports(capability.Sideband64k) {
+		if s.src.Capabilities.Supports(capability.Sideband64k) {
 			_ = fetch.Capabilities.Set(capability.Sideband64k)
 		}
-		if src.Capabilities.Supports(capability.OFSDelta) && dst.Capabilities.Supports(capability.OFSDelta) {
+		if s.src.Capabilities.Supports(capability.OFSDelta) && s.dst.Capabilities.Supports(capability.OFSDelta) {
 			_ = fetch.Capabilities.Set(capability.OFSDelta)
 			_ = update.Capabilities.Set(capability.OFSDelta)
 		}
-		response, fetchErr := up.UploadPack(ctx, fetch)
+		if err := s.wait(ctx); err != nil {
+			return err
+		}
+		response, fetchErr := s.up.UploadPack(ctx, fetch)
 		if fetchErr != nil {
 			// go-git's UnexpectedError does not implement Unwrap.
 			if unexpected, ok := fetchErr.(*plumbing.UnexpectedError); ok {
 				fetchErr = unexpected.Err
 			}
-			return result, fmt.Errorf("upload-pack: %w", fetchErr)
+			return fmt.Errorf("upload-pack: %w", fetchErr)
 		}
-		r.health.Progress("sync")
+		s.health.Progress("sync")
 		defer func() { _ = response.Close() }()
 		var pack io.Reader = response
 		if fetch.Capabilities.Supports(capability.Sideband64k) {
 			demux := sideband.NewDemuxer(sideband.Sideband64k, response)
-			demux.Progress = relayProgress{r.health}
+			demux.Progress = relayProgress{s.health}
 			pack = demux
 		}
-		update.Packfile = &relayCountingReader{Reader: pack, Closer: response, metrics: r.metrics, health: r.health}
+		update.Packfile = &relayCountingReader{Reader: pack, Closer: response, metrics: s.metrics, health: s.health}
 	} else if needsPack {
 		// Receive-pack requires a valid pack even when all objects already exist.
 		update.Packfile = io.NopCloser(bytes.NewReader(relayEmptyPack()))
 	}
-	result.Bytes, err = r.receivePack(ctx, destination.String(), token, update)
-	if err != nil {
-		return result, err
+	if err := s.wait(ctx); err != nil {
+		return err
 	}
-	r.health.Progress("sync")
-	verified, err := down.AdvertisedReferencesContext(ctx)
+	n, err := s.receivePack(ctx, s.destination.String(), s.token, update)
+	s.bytes += n
 	if err != nil {
-		return result, fmt.Errorf("verify destination: %w", err)
+		return err
 	}
-	r.health.Progress("sync")
+	s.health.Progress("sync")
+	if err := s.wait(ctx); err != nil {
+		return err
+	}
+	verified, err := s.down.AdvertisedReferencesContext(ctx)
+	if err != nil {
+		return fmt.Errorf("verify destination: %w", err)
+	}
+	s.health.Progress("sync")
 	verifiedRefs, err := relayRefs(verified, false)
 	if err != nil {
-		return result, err
+		return err
 	}
-	if !maps.Equal(result.SourceRefs, verifiedRefs) {
-		return result, errors.New("destination refs differ after push; retry from fresh advertisements")
+	if !maps.Equal(refs, verifiedRefs) {
+		return errors.New("destination refs differ after push; retry from fresh advertisements")
 	}
-	result.Changed = true
-	return result, nil
+	s.dst = verified
+	return nil
 }
 
 func relayEndpoint(raw string) (*transport.Endpoint, error) {

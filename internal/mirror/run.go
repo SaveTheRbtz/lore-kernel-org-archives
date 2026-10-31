@@ -77,7 +77,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	relay := &Relay{Client: newGitHTTPClient(client), MaxPushBytes: cfg.MaxPushBytes, metrics: metrics, health: health}
+	relay := &Relay{Client: newGitHTTPClient(client), MaxPushBytes: cfg.MaxPushBytes, metrics: metrics, health: health, log: log}
 	// The single worker retains approved IDs even when a sync fails.
 	repositories := map[string]gh.Repository{}
 	syncRepo := func(ctx context.Context, sourcePath string, entry lore.ManifestEntry) error {
@@ -109,7 +109,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 			repositories[sourcePath] = repo
 		}
 		log.Info("synced", "source", sourcePath, "repository", repo.Name, "duration", time.Since(started).String(),
-			"changed", result.Changed, "refs", len(result.SourceRefs), "bytes", result.Bytes)
+			"changed", result.Changed, "refs", len(result.SourceRefs), "bytes", result.Bytes, "batches", result.Batches)
 		return nil
 	}
 	daemon := daemon{fetch: fetch, sync: syncRepo, log: log, metrics: metrics, queue: metrics.Queue, health: health, recheck: cfg.Recheck, timeout: cfg.Timeout}
