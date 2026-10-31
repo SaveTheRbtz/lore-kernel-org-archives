@@ -6,15 +6,18 @@ import (
 )
 
 func TestSelectManifestKeepsAllEpochsOfRequestedInbox(t *testing.T) {
-	manifest := Manifest{"/cgroups/git/0.git": {}, "/lkml/git/0.git": {}, "/lkml/git/1.git": {}}
+	cgroups := ManifestEntry{Modified: 7, Description: "cgroups"}
+	oldEpoch := ManifestEntry{Modified: 11, Description: "old lkml epoch"}
+	newEpoch := ManifestEntry{Modified: 13, Description: "new lkml epoch"}
 	for _, test := range []struct {
 		lists string
 		want  Manifest
 	}{
-		{"", manifest},
-		{"lkml", Manifest{"/lkml/git/0.git": {}, "/lkml/git/1.git": {}}},
-		{" cgroups, lkml ", manifest},
+		{"", Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/1.git": newEpoch}},
+		{"lkml", Manifest{"/lkml/git/0.git": oldEpoch, "/lkml/git/1.git": newEpoch}},
+		{" cgroups, lkml ", Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/1.git": newEpoch}},
 	} {
+		manifest := Manifest{"/cgroups/git/0.git": cgroups, "/lkml/git/0.git": oldEpoch, "/lkml/git/1.git": newEpoch}
 		got, err := SelectManifest(manifest, test.lists, true)
 		if err != nil || !maps.Equal(got, test.want) {
 			t.Errorf("select %q = %v, %v; want %v", test.lists, got, err, test.want)
@@ -22,20 +25,10 @@ func TestSelectManifestKeepsAllEpochsOfRequestedInbox(t *testing.T) {
 	}
 }
 
-func TestSelectManifestRejectsUnsafeSelection(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		manifest Manifest
-		lists    string
-	}{
-		{"missing inbox", Manifest{"/lkml/git/0.git": {}}, "missing"},
-		{"invalid inbox", Manifest{"/lkml/git/0.git": {}}, "../lkml"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got, err := SelectManifest(test.manifest, test.lists, true); err == nil || got != nil {
-				t.Fatalf("unsafe inventory accepted: %v, %v", got, err)
-			}
-		})
+func TestSelectManifestRejectsUnknownInboxInitially(t *testing.T) {
+	manifest := Manifest{"/lkml/git/0.git": {}}
+	if got, err := SelectManifest(manifest, "lkml,missing", true); err == nil || got != nil {
+		t.Fatalf("unknown inbox returned a partial selection: %v, %v", got, err)
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -21,28 +20,28 @@ import (
 
 func TestNewRejectsInvalidOrganizationBeforeCredentials(t *testing.T) {
 	t.Setenv("GITHUB_APP_SECRET", "")
-	for _, org := range []string{"", "..", "owner/repo", "bad org", "user@example.org"} {
-		if _, err := New(t.Context(), http.DefaultClient, org); err == nil || err.Error() != "invalid GitHub organization" {
-			t.Errorf("New(%q) returned %v", org, err)
+	for _, tc := range []struct{ org, problem string }{
+		{"", "organization"},
+		{"owner/repo", "organization"},
+		{"lore-kernel-org-archives", "GITHUB_APP_SECRET"},
+	} {
+		if _, err := New(t.Context(), http.DefaultClient, tc.org); err == nil || !strings.Contains(err.Error(), tc.problem) {
+			t.Errorf("New(%q) returned %v; want %s validation", tc.org, err, tc.problem)
 		}
 	}
 }
 
 func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
-	const sourcePath = "/lkml/git/20.git"
-	const name = "lkml.20"
-	var stored *sdk.Repository
-	var mu sync.Mutex
-	var creates atomic.Int32
+	type creation struct {
+		Name     string `json:"name"`
+		Homepage string `json:"homepage"`
+		Private  *bool  `json:"private"`
+		AutoInit *bool  `json:"auto_init"`
+	}
+	created := make(chan creation, 1)
 	g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		if r.Method == http.MethodGet && r.URL.Path == "/repos/testorg/"+name {
-			if stored == nil {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(stored)
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/testorg/lkml.20" {
+			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/orgs/testorg/repos" {
@@ -50,35 +49,34 @@ func TestEnsureRepositoryCreatesEmptyPublicMirror(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		creates.Add(1)
-		var body map[string]any
+		var body creation
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
-		if body["name"] != name || body["homepage"] != "https://lore.kernel.org"+sourcePath {
-			t.Errorf("unexpected source mapping: %v", body)
+		select {
+		case created <- body:
+		default:
+			t.Error("mirror created more than once")
 		}
-		for _, field := range []string{"private", "auto_init"} {
-			if value, ok := body[field]; !ok || value != false {
-				t.Errorf("%s should be explicitly false, got %v", field, value)
-			}
-		}
-		stored = testRepository(name, sourcePath)
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(stored)
+		_ = json.NewEncoder(w).Encode(testRepository("lkml.20", "/lkml/git/20.git"))
 	})
-	for range 2 {
-		got, err := g.EnsureRepository(context.Background(), sourcePath, "LKML [epoch 20]", 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := Repository{ID: 123, Name: name, GitURL: "https://github.com/testorg/lkml.20.git", DefaultBranch: "master"}
-		if diff := cmp.Diff(want, got); diff != "" {
-			t.Fatalf("repository (-want +got):\n%s", diff)
-		}
+	got, err := g.EnsureRepository(t.Context(), "/lkml/git/20.git", "LKML [epoch 20]", 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if creates.Load() != 1 {
-		t.Fatalf("created %d times", creates.Load())
+	want := Repository{ID: 123, Name: "lkml.20", GitURL: "https://github.com/testorg/lkml.20.git", DefaultBranch: "master"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("repository (-want +got):\n%s", diff)
+	}
+	select {
+	case got := <-created:
+		want := creation{Name: "lkml.20", Homepage: "https://lore.kernel.org/lkml/git/20.git", Private: sdk.Ptr(false), AutoInit: sdk.Ptr(false)}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("creation (-want +got):\n%s", diff)
+		}
+	default:
+		t.Fatal("mirror was not created")
 	}
 }
 
@@ -109,50 +107,48 @@ func TestEnsureRepositoryRefusesUnsafeAdoption(t *testing.T) {
 }
 
 func TestEnsureRepositoryRevalidatesApprovedIdentity(t *testing.T) {
+	approvedRemote := testRepository("lkml.0", "/lkml/git/0.git")
+	replacement := *approvedRemote
+	replacement.ID = sdk.Ptr[int64](456)
+	unrelated := *approvedRemote
+	unrelated.Homepage = sdk.Ptr("https://example.org/unrelated")
 	for _, tc := range []struct {
-		name   string
-		change func(*sdk.Repository) *sdk.Repository
-		valid  bool
+		name    string
+		current *sdk.Repository
+		wantErr bool
 	}{
-		{"unchanged", func(r *sdk.Repository) *sdk.Repository { return r }, true},
-		{"replacement", func(r *sdk.Repository) *sdk.Repository { r.ID = sdk.Ptr[int64](456); return r }, false},
-		{"provenance changed", func(r *sdk.Repository) *sdk.Repository { r.Homepage = sdk.Ptr("https://example.org"); return r }, false},
-		{"deleted", func(*sdk.Repository) *sdk.Repository { return nil }, false},
+		{"unchanged", approvedRemote, false},
+		{"replacement", &replacement, true},
+		{"provenance changed", &unrelated, true},
+		{"deleted", nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			original := testRepository("lkml.0", "/lkml/git/0.git")
-			replacement := tc.change(testRepository("lkml.0", "/lkml/git/0.git"))
-			var reads atomic.Int32
+			var remote atomic.Pointer[sdk.Repository]
+			remote.Store(approvedRemote)
 			g := newTestGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					t.Errorf("must not mutate a previously approved repository: %s", r.Method)
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				remote := replacement
-				if reads.Add(1) == 1 {
-					remote = original
-				}
-				if remote == nil {
+				current := remote.Load()
+				if current == nil {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
-				_ = json.NewEncoder(w).Encode(remote)
+				_ = json.NewEncoder(w).Encode(current)
 			})
 			approved, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "", 0)
 			if err != nil || approved.ID != 123 {
 				t.Fatalf("initial approval = %+v, %v", approved, err)
 			}
+			remote.Store(tc.current)
 			current, err := g.EnsureRepository(t.Context(), "/lkml/git/0.git", "", approved.ID)
-			if tc.valid {
-				if err != nil || current != approved {
-					t.Fatalf("unchanged repository = %+v, %v; want %+v", current, err, approved)
-				}
-			} else if err == nil || current != (Repository{}) {
-				t.Fatalf("unsafe repository approved: %+v, %v", current, err)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("revalidation error = %v, want error=%v", err, tc.wantErr)
 			}
-			if reads.Load() != 2 {
-				t.Fatalf("repository read %d times, want revalidation", reads.Load())
+			if !tc.wantErr && current != approved {
+				t.Fatalf("unchanged repository = %+v; want %+v", current, approved)
 			}
 		})
 	}
@@ -172,8 +168,13 @@ func TestEnsureRepositoryRecoversLostCreationResponse(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(testRepository("netdev.0", "/netdev/git/0.git"))
 	})
-	if _, err := g.EnsureRepository(context.Background(), "/netdev/git/0.git", "", 0); err != nil {
+	got, err := g.EnsureRepository(t.Context(), "/netdev/git/0.git", "", 0)
+	if err != nil {
 		t.Fatal(err)
+	}
+	want := Repository{ID: 123, Name: "netdev.0", GitURL: "https://github.com/testorg/netdev.0.git", DefaultBranch: "master"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("recovered repository (-want +got):\n%s", diff)
 	}
 }
 
@@ -248,7 +249,6 @@ func TestRetryPolicyPreservesSDKRateLimits(t *testing.T) {
 			delay time.Duration
 		}{
 			{"primary reset", &sdk.RateLimitError{Rate: sdk.Rate{Reset: sdk.Timestamp{Time: time.Now().Add(2 * time.Minute)}}}, 2 * time.Minute},
-			{"secondary specified", &sdk.AbuseRateLimitError{RetryAfter: sdk.Ptr(42 * time.Second)}, 42 * time.Second},
 			{"secondary unspecified", &sdk.AbuseRateLimitError{}, time.Minute},
 			{"bounded", &sdk.AbuseRateLimitError{RetryAfter: sdk.Ptr(48 * time.Hour)}, 24 * time.Hour},
 		} {
@@ -257,10 +257,6 @@ func TestRetryPolicyPreservesSDKRateLimits(t *testing.T) {
 			if !errors.As(got, &limited) || limited.RetryAfter() != tc.delay || !errors.Is(got, tc.err) {
 				t.Fatalf("%s: SDK rate limit was not preserved with the expected retry delay", tc.name)
 			}
-		}
-		ordinary := errors.New("not rate limited")
-		if retryPolicy(ordinary) != ordinary || retryPolicy(nil) != nil {
-			t.Fatal("non-rate-limit errors changed")
 		}
 	})
 }

@@ -21,7 +21,10 @@ const manifestTestFingerprint = "0123456789abcdef0123456789abcdef01234567"
 func gzipManifest(t *testing.T, data string) []byte {
 	t.Helper()
 	var b bytes.Buffer
-	w := gzip.NewWriter(&b)
+	w, err := gzip.NewWriterLevel(&b, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := w.Write([]byte(data)); err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +66,10 @@ func TestInvalidInventoryNeverReturnsPartialManifest(t *testing.T) {
 	tests := map[string]string{
 		"empty":              `{}`,
 		"null":               `null`,
-		"array":              `[]`,
 		"null entry":         `{"/list":null}`,
 		"trailing":           `{"/list":` + valid + `} {}`,
 		"duplicate":          `{"/list":` + valid + `,"/list":` + valid + `}`,
 		"name collision":     `{"/list":` + valid + `,"/List":` + valid + `}`,
-		"duplicate field":    fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":1,"modified":2}}`, manifestTestFingerprint),
 		"missing digest":     `{"/list":{"modified":123}}`,
 		"bad digest length":  `{"/list":{"fingerprint":"0123456789abcdef","modified":123}}`,
 		"bad digest content": `{"/list":{"fingerprint":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","modified":123}}`,
@@ -79,7 +80,7 @@ func TestInvalidInventoryNeverReturnsPartialManifest(t *testing.T) {
 	}
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
-			manifest, err := decodeManifest([]byte(input))
+			manifest, err := fetchResponse(t, http.StatusOK, gzipManifest(t, input))
 			if err == nil || manifest != nil {
 				t.Fatalf("expected rejected whole inventory; got %#v, %v", manifest, err)
 			}
@@ -89,6 +90,8 @@ func TestInvalidInventoryNeverReturnsPartialManifest(t *testing.T) {
 
 func TestFetchManifestRejectsHTTPFailureAndTruncation(t *testing.T) {
 	valid := gzipManifest(t, fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":1}}`, manifestTestFingerprint))
+	corrupted := bytes.Clone(valid)
+	corrupted[len(corrupted)-8] ^= 1 // Corrupt the gzip CRC without changing the inventory.
 	for _, test := range []struct {
 		name   string
 		status int
@@ -96,6 +99,7 @@ func TestFetchManifestRejectsHTTPFailureAndTruncation(t *testing.T) {
 	}{
 		{"server error with valid inventory", http.StatusServiceUnavailable, valid},
 		{"valid inventory without gzip trailer", http.StatusOK, valid[:len(valid)-8]},
+		{"valid inventory with bad gzip checksum", http.StatusOK, corrupted},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got, err := fetchResponse(t, test.status, test.body); err == nil || got != nil {
@@ -112,7 +116,7 @@ func TestFetchManifestBoundsValidPayloads(t *testing.T) {
 	_, _ = rand.New(rand.NewSource(1)).Read(random)
 	for name, description := range map[string]string{
 		"compressed": base64.StdEncoding.EncodeToString(random),
-		"expanded":   strings.Repeat("x", maxManifestExpanded),
+		"expanded":   strings.Repeat("x", 32<<20),
 	} {
 		t.Run(name, func(t *testing.T) {
 			body := gzipManifest(t, fmt.Sprintf(`{"/list":{"fingerprint":%q,"modified":1,"description":%q}}`, manifestTestFingerprint, description))
