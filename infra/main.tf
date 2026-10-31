@@ -8,10 +8,16 @@ terraform {
   }
 }
 
+locals {
+  project = "kernelorg-mirror"
+  region  = "us-central1"
+  zone    = "${local.region}-a"
+}
+
 provider "google" {
-  project                         = "kernelorg-mirror"
-  region                          = "us-central1"
-  zone                            = "us-central1-a"
+  project                         = local.project
+  region                          = local.region
+  zone                            = local.zone
   add_terraform_attribution_label = false
 }
 
@@ -29,7 +35,7 @@ resource "google_project_service" "api" {
     "secretmanager.googleapis.com",
     "telemetry.googleapis.com",
   ])
-  project            = "kernelorg-mirror"
+  project            = local.project
   service            = each.key
   disable_on_destroy = false
 }
@@ -47,13 +53,13 @@ resource "google_service_account" "build" {
 }
 
 resource "google_project_iam_member" "logs_runtime" {
-  project = "kernelorg-mirror"
+  project = local.project
   role    = "roles/logging.logWriter"
   member  = google_service_account.runtime.member
 }
 
 resource "google_project_iam_member" "logs_build" {
-  project = "kernelorg-mirror"
+  project = local.project
   role    = "roles/logging.logWriter"
   member  = google_service_account.build.member
 }
@@ -63,13 +69,13 @@ resource "google_project_iam_member" "telemetry" {
     "roles/telemetry.writer",
     "roles/serviceusage.serviceUsageConsumer",
   ])
-  project = "kernelorg-mirror"
+  project = local.project
   role    = each.key
   member  = google_service_account.runtime.member
 }
 
 resource "google_artifact_registry_repository" "images" {
-  location      = "us-central1"
+  location      = local.region
   repository_id = "lore-mirror"
   description   = "Lore mirror images"
   format        = "DOCKER"
@@ -101,7 +107,7 @@ resource "google_secret_manager_secret" "github_app" {
   replication {
     user_managed {
       replicas {
-        location = "us-central1"
+        location = local.region
       }
     }
   }
@@ -118,8 +124,8 @@ resource "google_secret_manager_secret_iam_member" "runtime" {
 }
 
 resource "google_storage_bucket" "source" {
-  name                        = "kernelorg-mirror-build-source"
-  location                    = "US-CENTRAL1"
+  name                        = "${local.project}-build-source"
+  location                    = upper(local.region)
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
   soft_delete_policy {
@@ -152,7 +158,7 @@ resource "google_compute_network" "mirror" {
 
 resource "google_compute_subnetwork" "mirror" {
   name                     = "lore-mirror"
-  region                   = "us-central1"
+  region                   = local.region
   ip_cidr_range            = "10.42.0.0/24"
   network                  = google_compute_network.mirror.id
   private_ip_google_access = true
@@ -252,7 +258,7 @@ resource "google_compute_instance_template" "mirror" {
 resource "google_compute_instance_group_manager" "mirror" {
   name                      = "lore-mirror"
   base_instance_name        = "lore-mirror"
-  zone                      = "us-central1-a"
+  zone                      = local.zone
   target_size               = var.enabled ? 1 : 0
   wait_for_instances        = true
   wait_for_instances_status = "UPDATED"
