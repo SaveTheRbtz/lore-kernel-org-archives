@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	cloud.google.com/go/compute/metadata v0.10.0
-	cloud.google.com/go/secretmanager v1.23.1
+	cloud.google.com/go/secretmanager v1.24.0
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/google/go-cmp v0.7.0
@@ -15,7 +15,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/oauth2 v0.37.0
+	golang.org/x/oauth2 v0.38.0
 	google.golang.org/grpc v1.85.0
 )
 
